@@ -40,14 +40,31 @@ export function getAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 }
 
 export function assertRedisConfig(config: AppConfig): Required<Pick<AppConfig, "redisUrl" | "redisToken">> {
-  if (!config.redisUrl || !config.redisToken) {
+  const missingKeys: string[] = [];
+
+  if (!config.redisUrl) {
+    missingKeys.push("UPSTASH_REDIS_REST_URL");
+  }
+
+  if (!config.redisToken) {
+    missingKeys.push("UPSTASH_REDIS_REST_TOKEN");
+  }
+
+  if (missingKeys.length > 0) {
     throw new Error(
-      "Missing Upstash Redis configuration. Set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN before starting the server."
+      `TASKBOARD_STORAGE=upstash requires these environment variables: ${missingKeys.join(", ")}. ` +
+      "Set them in .env, or switch to TASKBOARD_STORAGE=local for local file persistence."
     );
   }
 
   return {
-    redisUrl: config.redisUrl,
-    redisToken: config.redisToken
+    redisUrl: config.redisUrl!,
+    redisToken: config.redisToken!
   };
+}
+
+export function assertStorageConfig(config: AppConfig): void {
+  if (config.storage === "upstash") {
+    assertRedisConfig(config);
+  }
 }

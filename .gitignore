@@ -3,4 +3,5 @@ dist
 .env
 .taskboard
 .github
+.backup
 npm-debug.log*

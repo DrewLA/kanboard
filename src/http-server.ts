@@ -5,7 +5,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import Fastify, { FastifyInstance } from "fastify";
 import { ZodError } from "zod";
 
-import { getAppConfig } from "./config";
+import { assertStorageConfig, getAppConfig } from "./config";
 import {
   boardBriefPatchSchema,
   createNodeCommentInputSchema,
@@ -69,6 +69,7 @@ function parseBody<T>(schema: { parse: (value: unknown) => T }, body: unknown): 
 
 async function buildServer(): Promise<FastifyInstance> {
   const config = getAppConfig();
+  assertStorageConfig(config);
   const repository = createTaskboardRepository(config);
   await repository.load();
 
@@ -237,4 +238,8 @@ async function start(): Promise<void> {
   await app.listen({ host: config.host, port: config.port });
 }
 
-void start();
+void start().catch((error) => {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`Failed to start taskboard server: ${message}`);
+  process.exit(1);
+});

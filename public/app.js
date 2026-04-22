@@ -353,7 +353,7 @@ function render() {
   }
 
   const boardBrief = state.taskboard.boardBrief || {};
-  productNameHeading.textContent = boardBrief.productName || "Private Taskboard";
+  productNameHeading.textContent = boardBrief.productName || "Kanboard";
   renderFilters();
   renderKanban();
   renderBacklog();
