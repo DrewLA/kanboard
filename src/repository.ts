@@ -100,7 +100,10 @@ export class LocalFileTaskboardRepository implements TaskboardRepository {
   constructor(private readonly filePath: string) {}
 
   private async withFileLock<T>(callback: () => Promise<T>): Promise<T> {
+    const directory = path.dirname(this.filePath);
     const lockPath = `${this.filePath}.lock`;
+
+    await mkdir(directory, { recursive: true });
 
     for (let attempt = 0; attempt < LOCAL_LOCK_RETRIES; attempt += 1) {
       try {

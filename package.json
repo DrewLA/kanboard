@@ -1,5 +1,5 @@
 {
-  "name": "private-taskboard",
+  "name": "kanboard",
   "version": "0.1.0",
   "private": true,
   "description": "Local-only agile taskboard with Upstash Redis persistence, CRUD functions, a simple UI, and an MCP server.",

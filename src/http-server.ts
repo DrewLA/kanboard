@@ -70,6 +70,7 @@ function parseBody<T>(schema: { parse: (value: unknown) => T }, body: unknown): 
 async function buildServer(): Promise<FastifyInstance> {
   const config = getAppConfig();
   const repository = createTaskboardRepository(config);
+  await repository.load();
 
   const app = Fastify({ logger: true });
 
