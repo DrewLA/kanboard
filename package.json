@@ -7,7 +7,6 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsx watch src/http-server.ts",
     "local": "tsx src/http-server.ts",
-    "local:dev": "tsx watch src/http-server.ts",
     "start": "node dist/http-server.js",
     "mcp": "tsx src/mcp-server.ts",
     "mcp:start": "node dist/mcp-server.js",

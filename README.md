@@ -85,7 +85,6 @@ make build     # compile TypeScript to dist/
 make dev       # run the localhost HTTP server with tsx watch
 make start     # run the compiled HTTP server from dist/
 make local     # run the localhost HTTP server with local JSON persistence
-make local-dev # run the local JSON server with tsx watch
 make mcp       # run the stdio MCP server (shares the same core tools)
 make mcp-local # run the stdio MCP server with local JSON persistence
 make start     # run the compiled server

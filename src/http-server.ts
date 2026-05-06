@@ -5,7 +5,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import Fastify, { FastifyInstance } from "fastify";
 import { ZodError } from "zod";
 
-import { assertStorageConfig, getAppConfig } from "./config";
+import { AppConfig, assertStorageConfig, getAppConfig } from "./config";
 import {
   boardBriefPatchSchema,
   createNodeCommentInputSchema,
@@ -24,7 +24,7 @@ import {
   updateWorkLinkInputSchema
 } from "./model";
 import { buildMcpServer } from "./mcp-core";
-import { createTaskboardRepository } from "./repository";
+import { RepositoryConflictError, createTaskboardRepository } from "./repository";
 import {
   NotFoundError,
   createNodeComment,
@@ -62,18 +62,24 @@ import {
   updateUserStory,
   updateWorkLink
 } from "./taskboard-service";
+import { formatCreatingKanboardMessage, formatStartupError, getStorageLogContext } from "./startup-errors";
 
 function parseBody<T>(schema: { parse: (value: unknown) => T }, body: unknown): T {
   return schema.parse(body);
 }
 
-async function buildServer(): Promise<FastifyInstance> {
-  const config = getAppConfig();
-  assertStorageConfig(config);
-  const repository = createTaskboardRepository(config);
-  await repository.load();
+let startupConfig: AppConfig | undefined;
 
+async function buildServer(config: AppConfig): Promise<FastifyInstance> {
+  assertStorageConfig(config);
   const app = Fastify({ logger: true });
+  const repository = createTaskboardRepository(config);
+
+  await repository.load({
+    onCreate: () => {
+      app.log.info(getStorageLogContext(config), formatCreatingKanboardMessage(config));
+    }
+  });
 
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof ZodError) {
@@ -83,6 +89,18 @@ async function buildServer(): Promise<FastifyInstance> {
 
     if (error instanceof NotFoundError) {
       reply.status(error.statusCode).send({ message: error.message });
+      return;
+    }
+
+    if (error instanceof RepositoryConflictError) {
+      reply.status(409).send({
+        message: "Kanboard storage revision conflict.",
+        detail: error.message,
+        operation: error.operation,
+        expectedRevision: error.expectedRevision,
+        currentRevision: error.currentRevision,
+        recovery: "Reload the board and retry. If this keeps happening, check for another kanboard process or client using the same storage location."
+      });
       return;
     }
 
@@ -213,7 +231,8 @@ async function buildServer(): Promise<FastifyInstance> {
 
 async function start(): Promise<void> {
   const config = getAppConfig();
-  const app = await buildServer();
+  startupConfig = config;
+  const app = await buildServer(config);
 
   const shutdown = async (signal: string): Promise<void> => {
     app.log.info({ signal }, "Shutting down HTTP server.");
@@ -239,7 +258,6 @@ async function start(): Promise<void> {
 }
 
 void start().catch((error) => {
-  const message = error instanceof Error ? error.message : String(error);
-  console.error(`Failed to start taskboard server: ${message}`);
+  console.error(formatStartupError("kanboard HTTP server", error, startupConfig));
   process.exit(1);
 });

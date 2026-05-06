@@ -1,6 +1,6 @@
 SHELL := /bin/zsh
 
-.PHONY: install build dev start local local-dev mcp mcp-local check migrate-up migrate-down
+.PHONY: install build dev start local mcp mcp-local check migrate-up migrate-down
 
 install:
 	npm install
@@ -16,9 +16,6 @@ start:
 
 local:
 	TASKBOARD_STORAGE=local npm run local
-
-local-dev:
-	TASKBOARD_STORAGE=local npm run local:dev
 
 mcp:
 	npm run mcp

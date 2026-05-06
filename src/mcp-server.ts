@@ -1,13 +1,22 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
-import { assertStorageConfig, getAppConfig } from "./config";
+import { AppConfig, assertStorageConfig, getAppConfig } from "./config";
 import { buildMcpServer } from "./mcp-core";
 import { createTaskboardRepository } from "./repository";
+import { formatCreatingKanboardMessage, formatStartupError } from "./startup-errors";
+
+let startupConfig: AppConfig | undefined;
 
 async function start(): Promise<void> {
   const config = getAppConfig();
+  startupConfig = config;
   assertStorageConfig(config);
   const repository = createTaskboardRepository(config);
+  await repository.load({
+    onCreate: () => {
+      console.error(formatCreatingKanboardMessage(config));
+    }
+  });
   const server = buildMcpServer(repository);
 
   const transport = new StdioServerTransport();
@@ -15,7 +24,6 @@ async function start(): Promise<void> {
 }
 
 void start().catch((error) => {
-  const message = error instanceof Error ? error.message : String(error);
-  console.error(`Failed to start MCP server: ${message}`);
+  console.error(formatStartupError("kanboard MCP server", error, startupConfig));
   process.exit(1);
 });

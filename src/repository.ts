@@ -11,23 +11,110 @@ const LOCAL_LOCK_DELAY_MS = 10;
 
 export class RepositoryConflictError extends Error {
   readonly currentRevision: number;
+  readonly expectedRevision: number;
+  readonly operation: string;
 
-  constructor(currentRevision: number) {
-    super(`Document revision mismatch. Current revision is ${currentRevision}.`);
+  constructor(currentRevision: number, expectedRevision: number, operation = "save the kanboard document") {
+    super(
+      `Document revision mismatch while trying to ${operation}. ` +
+      `Expected revision ${expectedRevision}, but storage currently has revision ${currentRevision}.`
+    );
     this.name = "RepositoryConflictError";
     this.currentRevision = currentRevision;
+    this.expectedRevision = expectedRevision;
+    this.operation = operation;
   }
 }
 
+export class RepositoryDataError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RepositoryDataError";
+  }
+}
+
+export interface LoadTaskboardOptions {
+  onCreate?: (document: TaskboardDocument) => void | Promise<void>;
+}
+
+export interface SaveTaskboardOptions {
+  operation?: string;
+}
+
 export interface TaskboardRepository {
-  load(): Promise<TaskboardDocument>;
-  save(document: TaskboardDocument, expectedRevision: number): Promise<TaskboardDocument>;
+  load(options?: LoadTaskboardOptions): Promise<TaskboardDocument>;
+  save(document: TaskboardDocument, expectedRevision: number, options?: SaveTaskboardOptions): Promise<TaskboardDocument>;
 }
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, milliseconds);
   });
+}
+
+function parseRevision(value: unknown): number {
+  if (typeof value === "number" && Number.isInteger(value) && value >= 0) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const parsed = Number(value);
+
+    if (Number.isInteger(parsed) && parsed >= 0) {
+      return parsed;
+    }
+  }
+
+  return 0;
+}
+
+function describeRedisResponse(result: unknown): string {
+  try {
+    return JSON.stringify(result) ?? String(result);
+  } catch {
+    return String(result);
+  }
+}
+
+function parseCompareAndSetResult(result: unknown): { ok: boolean; currentRevision: number } {
+  let payload = result;
+
+  if (typeof result === "string") {
+    try {
+      payload = JSON.parse(result) as unknown;
+    } catch {
+      throw new Error(`Unexpected Upstash Redis compare-and-set response: ${describeRedisResponse(result)}.`);
+    }
+  }
+
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+    throw new Error(`Unexpected Upstash Redis compare-and-set response: ${describeRedisResponse(result)}.`);
+  }
+
+  const record = payload as { ok?: unknown; currentRevision?: unknown };
+
+  if (typeof record.ok !== "boolean") {
+    throw new Error(`Unexpected Upstash Redis compare-and-set response: ${describeRedisResponse(result)}.`);
+  }
+
+  return {
+    ok: record.ok,
+    currentRevision: parseRevision(record.currentRevision)
+  };
+}
+
+function parseStoredDocumentJson(value: string, source: string, recovery: string): TaskboardDocument {
+  try {
+    return normalizeTaskboardDocument(JSON.parse(value));
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+
+    throw new RepositoryDataError(
+      `${source} exists but does not contain valid kanboard JSON. ` +
+      "The server will not overwrite it automatically. " +
+      `${recovery} JSON parse error: ${detail}.`
+    );
+  }
 }
 
 export class UpstashRedisTaskboardRepository implements TaskboardRepository {
@@ -64,16 +151,18 @@ return cjson.encode({ ok = true, currentRevision = currentRevision })
   ) {
     this.redis = new Redis({
       url: redisUrl,
-      token: redisToken
+      token: redisToken,
+      automaticDeserialization: false
     });
   }
 
-  async load(): Promise<TaskboardDocument> {
-    const value = await this.redis.get<string>(this.redisKey);
+  async load(options: LoadTaskboardOptions = {}): Promise<TaskboardDocument> {
+    const value = await this.redis.get<string | null>(this.redisKey);
 
-    if (!value) {
+    if (value === null || value === undefined) {
       const initial = createEmptyTaskboardDocument();
-      await this.save(initial, 0);
+      await options.onCreate?.(initial);
+      await this.save(initial, 0, { operation: "create the initial Upstash kanboard" });
       return initial;
     }
 
@@ -81,15 +170,19 @@ return cjson.encode({ ok = true, currentRevision = currentRevision })
       return normalizeTaskboardDocument(value);
     }
 
-    return normalizeTaskboardDocument(JSON.parse(value));
+    return parseStoredDocumentJson(
+      value,
+      `Upstash Redis key "${this.redisKey}"`,
+      "Back it up, fix the stored value, delete the key, or set TASKBOARD_REDIS_KEY to a fresh key."
+    );
   }
 
-  async save(document: TaskboardDocument, expectedRevision: number): Promise<TaskboardDocument> {
-    const result = await this.redis.eval<string[], string>(this.compareAndSetScript, [this.redisKey], [String(expectedRevision), JSON.stringify(document)]);
-    const payload = typeof result === "string" ? JSON.parse(result) as { ok?: boolean; currentRevision?: number } : {};
+  async save(document: TaskboardDocument, expectedRevision: number, options: SaveTaskboardOptions = {}): Promise<TaskboardDocument> {
+    const result = await this.redis.eval<string[], unknown>(this.compareAndSetScript, [this.redisKey], [String(expectedRevision), JSON.stringify(document)]);
+    const payload = parseCompareAndSetResult(result);
 
     if (!payload.ok) {
-      throw new RepositoryConflictError(typeof payload.currentRevision === "number" ? payload.currentRevision : 0);
+      throw new RepositoryConflictError(payload.currentRevision, expectedRevision, options.operation);
     }
 
     return document;
@@ -140,22 +233,27 @@ export class LocalFileTaskboardRepository implements TaskboardRepository {
     }
   }
 
-  async load(): Promise<TaskboardDocument> {
+  async load(options: LoadTaskboardOptions = {}): Promise<TaskboardDocument> {
     try {
       const value = await readFile(this.filePath, "utf8");
-      return normalizeTaskboardDocument(JSON.parse(value));
+      return parseStoredDocumentJson(
+        value,
+        `Local kanboard file ${this.filePath}`,
+        "Back it up, fix the file, remove it, or set TASKBOARD_LOCAL_FILE to a fresh path."
+      );
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;
       }
 
       const initial = createEmptyTaskboardDocument();
-      await this.save(initial, 0);
+      await options.onCreate?.(initial);
+      await this.save(initial, 0, { operation: "create the initial local kanboard" });
       return initial;
     }
   }
 
-  async save(document: TaskboardDocument, expectedRevision: number): Promise<TaskboardDocument> {
+  async save(document: TaskboardDocument, expectedRevision: number, options: SaveTaskboardOptions = {}): Promise<TaskboardDocument> {
     const directory = path.dirname(this.filePath);
     const tempPath = `${this.filePath}.tmp`;
 
@@ -163,7 +261,7 @@ export class LocalFileTaskboardRepository implements TaskboardRepository {
       const current = await this.readCurrentDocument();
 
       if (current.revision !== expectedRevision) {
-        throw new RepositoryConflictError(current.revision);
+        throw new RepositoryConflictError(current.revision, expectedRevision, options.operation);
       }
 
       await mkdir(directory, { recursive: true });
