@@ -1,6 +1,6 @@
 SHELL := /bin/zsh
 
-.PHONY: install build dev start local mcp mcp-local check migrate-up migrate-down
+.PHONY: install build dev start local mcp mcp-local check identity-onboard team-init team-add-user migrate-up migrate-down
 
 install:
 	npm install
@@ -15,17 +15,26 @@ start:
 	npm run start
 
 local:
-	TASKBOARD_STORAGE=local npm run local
+	TASKBOARD_MODE=private npm run local
 
 mcp:
 	npm run mcp
 
 mcp-local:
-	TASKBOARD_STORAGE=local npm run mcp
+	TASKBOARD_MODE=private npm run mcp
 
 check:
 	npm run typecheck
 	npm run build
+
+identity-onboard:
+	npm run identity:onboard
+
+team-init:
+	npm run team:init
+
+team-add-user:
+	npm run team:add-user
 
 migrate-up:
 	npx tsx src/scripts/migrate.ts up

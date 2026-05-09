@@ -5,53 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Kanboard</title>
     <link rel="stylesheet" href="/styles.css" />
-    <script defer src="/app.js"></script>
+    <script type="module" src="/app.js"></script>
   </head>
   <body>
-    <header class="topbar">
-      <div class="topbar-left">
-        <h1 id="product-name-heading" class="brand">Taskboard</h1>
-        <nav class="view-tabs">
-          <button class="tab active" data-view="board">Board</button>
-          <button class="tab" data-view="backlog">Backlog</button>
-        </nav>
-        <span id="run-state" class="storage-badge">…</span>
-      </div>
-      <div class="topbar-right">
-        <button id="btn-brief" class="secondary">Brief</button>
-        <button id="btn-refresh" class="secondary icon-btn" title="Refresh">↺</button>
-      </div>
-    </header>
-
-    <!-- Board view: kanban columns -->
-    <div id="view-board" class="view">
-      <div class="board-toolbar">
-        <select id="filter-epic"><option value="">All Epics</option></select>
-        <select id="filter-feature"><option value="">All Features</option></select>
-        <button id="btn-add-task">+ Task</button>
-      </div>
-      <div id="kanban-board" class="kanban">
-        <p class="empty-state">Loading…</p>
-      </div>
-    </div>
-
-    <!-- Backlog view: epic → feature → story → task hierarchy -->
-    <div id="view-backlog" class="view hidden">
-      <div class="backlog-toolbar">
-        <button id="btn-add-epic">+ Epic</button>
-      </div>
-      <div id="backlog-root" class="backlog"></div>
-    </div>
-
-    <!-- Shared modal -->
-    <dialog id="modal">
-      <div class="modal-inner">
-        <div class="modal-header">
-          <h2 id="modal-title">–</h2>
-          <button id="modal-close" class="secondary close-btn" aria-label="Close">✕</button>
-        </div>
-        <div id="modal-body"></div>
-      </div>
-    </dialog>
+    <div id="app-root"></div>
   </body>
 </html>

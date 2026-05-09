@@ -112,14 +112,16 @@ async function buildServer(config: AppConfig): Promise<FastifyInstance> {
 
   app.get("/api/health", async () => ({
     ok: true,
-    mode: "local-only",
-    storage: config.storage,
-    localFile: config.storage === "local" ? config.localFile : undefined,
-    redisKey: config.redisKey,
+    mode: config.mode,
+    stateDir: config.stateDir,
+    dbConfigured: Boolean(config.dbString),
+    dbKey: config.mode === "team" || config.mode === "private-backup" ? config.redisKey : undefined,
     host: config.host,
     port: config.port
   }));
 
+  app.get("/api/users", async () => repository.listUsers?.() ?? []);
+  app.get("/api/users/me", async () => repository.getCurrentUser?.() ?? null);
   app.get("/api/taskboard", async () => getTaskboard(repository));
   app.get("/api/nodes/resolve", async (request) => resolveNode(repository, parseBody(resolveNodeInputSchema, request.query)));
   app.get("/api/nodes/search", async (request) => findNodes(repository, parseBody(findNodesInputSchema, request.query)));
