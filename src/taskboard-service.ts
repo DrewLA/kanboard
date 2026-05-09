@@ -762,7 +762,10 @@ async function mutateDocument<T>(
     const result = plan.apply(document);
     document.revision = currentRevision + 1;
     document.recentMutations = [];
-    await repository.save(document, currentRevision);
+    await repository.save(document, currentRevision, {
+      scopes: plan.scopes,
+      summary: plan.summary
+    });
     return result;
   });
 }

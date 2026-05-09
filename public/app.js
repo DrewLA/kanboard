@@ -83,8 +83,17 @@ function setRunState(health) {
     return;
   }
 
-  runState.textContent = health.storage === "local" ? "Local JSON" : "Upstash Redis";
-  runState.title = health.storage === "local" ? health.localFile || "Local file storage" : health.redisKey;
+  const labels = {
+    private: "Private",
+    "private-backup": "Private + Backup",
+    team: "Team"
+  };
+  runState.textContent = labels[health.mode] || health.mode || "Private";
+  runState.title = health.mode === "team"
+    ? "Team mode: shared DB is authoritative and local state is mirrored."
+    : health.mode === "private-backup"
+      ? "Private backup mode: local state is authoritative with scheduled remote backups."
+      : health.stateDir || "Private local state package";
 }
 
 function priorityClass(priority) {

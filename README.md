@@ -1,6 +1,6 @@
-# Local Kanban Taskboard
+# Kanban Taskboard
 
-A local-only taskboard for tracking software delivery from epic down to task.
+A trusted-local taskboard for tracking software delivery from epic down to task. Each user runs their own local backend; team mode coordinates through a shared DB connection string.
 
 The board keeps one shared source of truth for:
 
@@ -12,11 +12,12 @@ The board keeps one shared source of truth for:
 
 ## Runtime model
 
-This project runs as one localhost-only Fastify process.
+This project runs as one localhost-only Fastify process per user.
 
 - the browser UI is served from `http://127.0.0.1:8787`
 - the REST API is served under `/api/*`
 - the MCP endpoint is served at `POST /mcp`
+- team mode uses a remote DB as the shared authority; there is no central app server
 
 ## What is included
 
@@ -24,7 +25,9 @@ This project runs as one localhost-only Fastify process.
 - local JSON API
 - localhost HTTP MCP endpoint
 - full CRUD for BoardBrief, epics, features, stories, tasks, comments, and links
-- Upstash Redis or local JSON persistence
+- modular table-shaped local state package
+- generic remote DB string support, with Upstash Redis as the first adapter
+- EVM address user IDs and EIP-712 signed team mutations
 - Makefile commands for local development
 
 ## Local-only design
@@ -43,24 +46,21 @@ The server binds to `127.0.0.1` by default and is intended for private local use
 ## Setup
 
 1. Copy `.env.example` to `.env`.
-2. Choose a storage mode.
+2. Choose a mode.
 3. Install dependencies.
 4. Start the server.
 
-For Upstash mode:
+Modes:
 
-- leave `TASKBOARD_STORAGE=upstash`
-- fill in `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`
+- `private`: local state package is authoritative
+- `private-backup`: local state package is authoritative; changed state is backed up hourly to the remote DB prefix
+- `team`: remote DB is authoritative; local state package mirrors reads and writes
 
-For local JSON mode:
-
-- set `TASKBOARD_STORAGE=local`
-- optionally change `TASKBOARD_LOCAL_FILE`
-- no Redis instance is required
+For team mode, generate an EVM key and register its address in the team `users` table. See `docs/internal-tools.md`.
 
 ```bash
 make install
-make local
+make dev
 ```
 
 Open `http://127.0.0.1:8787`.
@@ -68,11 +68,14 @@ Open `http://127.0.0.1:8787`.
 ## Environment variables
 
 ```bash
-TASKBOARD_STORAGE=upstash
-TASKBOARD_LOCAL_FILE=.taskboard/local-taskboard.json
-UPSTASH_REDIS_REST_URL=...
-UPSTASH_REDIS_REST_TOKEN=...
-TASKBOARD_REDIS_KEY=taskboard:main
+TASKBOARD_MODE=private
+TASKBOARD_STATE_DIR=.kanboard/state
+TASKBOARD_IDENTITY_FILE=.kanboard/identity.json
+TASKBOARD_USER_FILE=.kanboard/user.json
+TASKBOARD_PRIVATE_USERNAME=Private User
+TASKBOARD_DB_STRING=upstash;url=...;token=...;prefix=kanboard:main
+TASKBOARD_EVM_PRIVATE_KEY=...
+TASKBOARD_BACKUP_INTERVAL_MINUTES=60
 TASKBOARD_HOST=127.0.0.1
 TASKBOARD_PORT=8787
 ```
@@ -84,11 +87,14 @@ make install   # npm install
 make build     # compile TypeScript to dist/
 make dev       # run the localhost HTTP server with tsx watch
 make start     # run the compiled HTTP server from dist/
-make local     # run the localhost HTTP server with local JSON persistence
+make local     # run the localhost HTTP server in private mode
 make mcp       # run the stdio MCP server (shares the same core tools)
-make mcp-local # run the stdio MCP server with local JSON persistence
+make mcp-local # run the stdio MCP server in private mode
 make start     # run the compiled server
 make check     # typecheck and build
+npm run identity:onboard  # create encrypted local identity file
+npm run team:init         # initialize a team DB package
+npm run team:add-user     # add a team user
 make migrate-up   # migrate data from local JSON to Upstash Redis
 make migrate-down # migrate data from Upstash Redis to local JSON
 ```
@@ -98,6 +104,8 @@ make migrate-down # migrate data from Upstash Redis to local JSON
 Health:
 
 - `GET /api/health`
+- `GET /api/users`
+- `GET /api/users/me`
 
 Board and brief:
 
@@ -163,20 +171,22 @@ Available tools include:
 
 ## Persistence
 
-The board persists as one document.
+Live state is modular, not one board document. The local state package stores one JSON file per table under `TASKBOARD_STATE_DIR`:
 
-Upstash mode:
+- `users.json`
+- `boardBrief.json`
+- `epics.json`
+- `features.json`
+- `userStories.json`
+- `tasks.json`
+- `comments.json`
+- `links.json`
+- `indexes.json`
+- `metadata.json`
 
-- stores the JSON document at `TASKBOARD_REDIS_KEY`
-- useful when you want remote persistence without hosting your own database
+Each row carries its own version. Mutations compare the preread row versions against current row versions and fail with a conflict when an affected task, story, feature, epic, comment, link, or index changed first.
 
-Local mode:
-
-- stores the JSON document at `TASKBOARD_LOCAL_FILE`
-- requires no Redis service
-- is the simplest private local setup
-
-Writes are serialized in-process so the UI and localhost MCP clients operate against one consistent runtime.
+In team mode, the remote DB adapter performs the version checks atomically. The local state package mirrors the shared DB after reads and successful writes.
 
 ## Project structure
 
@@ -184,12 +194,15 @@ Writes are serialized in-process so the UI and localhost MCP clients operate aga
 public/                  Static UI
 src/config.ts            Environment parsing
 src/model.ts             Types, schemas, and snapshot mapping
-src/repository.ts        Upstash and local JSON persistence
+src/repository.ts        Modular local and remote persistence
+src/state-package.ts     Table-shaped state package mapping
+src/identity.ts          EVM identity and EIP-712 mutation signing
 src/taskboard-service.ts Shared CRUD logic and mutation rules
 src/http-server.ts       Local Fastify server for UI, API, and HTTP MCP
 src/mcp-core.ts          Shared MCP tool definitions and handlers
 src/mcp-server.ts        Optional stdio wrapper around the same MCP core
 docs/architecture.md     Design notes
+docs/internal-tools.md   EVM identity and team admin tools
 docs/agent-skill-prompt.md Agent operating prompt
 ```
 
