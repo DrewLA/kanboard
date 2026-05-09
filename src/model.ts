@@ -421,7 +421,7 @@ function normalizeEntityRecord<T extends BaseEntity>(
       : [];
 
     result[id] = {
-      ...entity,
+      ...(JSON.parse(JSON.stringify(entity)) as T),
       alias: buildUniqueAlias(entity.alias || entity.title || id, usedAliases, id),
       comments
     };
