@@ -2,7 +2,7 @@ node_modules
 dist
 .env
 .taskboard
-.kanboard
+.kanboard/
 .github
 .backup
 npm-debug.log*

@@ -7,6 +7,7 @@ import { BoardView } from "./BoardView.js";
 import { BacklogView } from "./BacklogView.js";
 import { BoardBriefView } from "./BoardBriefView.js";
 import { FormModal } from "./Modal.js";
+import { AgentsPane } from "./AgentsPane.js";
 
 const html = htm.bind(React.createElement);
 
@@ -18,6 +19,7 @@ export function App() {
   const [expanded, setExpanded] = useState(new Set());
   const [modalStack, setModalStack] = useState([]);
   const [confirmState, setConfirmState] = useState(null);
+  const [agentsOpen, setAgentsOpen] = useState(false);
 
   const lookup = useMemo(() => {
     const epics = taskboard?.epics || [];
@@ -329,6 +331,8 @@ export function App() {
         activeView=${activeView}
         onViewChange=${navigateTo}
         onRefresh=${refreshSafe}
+        onToggleAgents=${() => setAgentsOpen((v) => !v)}
+        agentsOpen=${agentsOpen}
       />
 
       ${activeView === "board" ? html`
@@ -385,6 +389,12 @@ export function App() {
           </div>
         </div>
       ` : null}
+
+      <${AgentsPane}
+        open=${agentsOpen}
+        onClose=${() => setAgentsOpen(false)}
+        health=${health}
+      />
     </main>
   `;
 }

@@ -4,7 +4,7 @@ import { viewLabels, runStateLabel, runStateTitle } from "./utils.js";
 
 const html = htm.bind(React.createElement);
 
-export function Header({ productName, health, activeView, onViewChange, onRefresh }) {
+export function Header({ productName, health, activeView, onViewChange, onRefresh, onToggleAgents, agentsOpen }) {
   return html`
     <header className="topbar glass-panel">
       <div className="brand-cluster">
@@ -29,6 +29,18 @@ export function Header({ productName, health, activeView, onViewChange, onRefres
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
             <path d="M12.5 7A5.5 5.5 0 1 1 9.4 2.1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
             <path d="M9 1v3.5H12.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+        <button
+          className=${`button button-ghost btn-icon${agentsOpen ? " active" : ""}`}
+          onClick=${onToggleAgents}
+          aria-label="Toggle agents pane"
+          title="Agents"
+          aria-expanded=${agentsOpen}
+        >
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true">
+            <circle cx="7.5" cy="5" r="2.75" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M1.5 13.5c0-2.485 2.686-4.5 6-4.5s6 2.015 6 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
           </svg>
         </button>
       </div>
