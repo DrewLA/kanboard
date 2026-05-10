@@ -12,8 +12,6 @@
     "mcp:start": "node dist/mcp-server.js",
     "identity:onboard": "tsx src/scripts/identity-onboard.ts",
     "identity:whoami": "tsx src/scripts/whoami.ts",
-    "team:init": "tsx src/scripts/team-admin.ts",
-    "team:add-user": "tsx src/scripts/team-admin.ts",
     "typecheck": "tsc --noEmit",
     "migrate:up": "tsx src/scripts/migrate.ts up",
     "migrate:down": "tsx src/scripts/migrate.ts down"

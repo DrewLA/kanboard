@@ -74,6 +74,13 @@ export class RepositoryAccessError extends Error {
   }
 }
 
+export class TeamBoardEmptyError extends Error {
+  constructor() {
+    super("Team board database is empty.");
+    this.name = "TeamBoardEmptyError";
+  }
+}
+
 export interface LoadTaskboardOptions {
   onCreate?: (document: TaskboardDocument) => void | Promise<void>;
 }
@@ -497,9 +504,7 @@ class ModularTaskboardRepository implements TaskboardRepository {
 
     if (isStatePackageEmpty(statePackage)) {
       if (this.options.mode === "team") {
-        throw new Error(
-          "Team board database is empty. Initialize the team board with the internal tools, register your address, then restart."
-        );
+        throw new TeamBoardEmptyError();
       }
 
       await loadOptions.onCreate?.(createEmptyTaskboardDocument());

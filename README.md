@@ -78,8 +78,9 @@ This interactive script:
 5. Prompts you to set and confirm an identity password
 6. Writes the encrypted identity to `.kanboard/identity.json`
 7. Writes your profile to `.kanboard/user.json`
-8. Registers you in the team DB (if configured) — creates the `users` table if it does not exist
-9. Prints your address, name, and role, then tells you to run `make dev` and open the board URL
+8. If the team DB is empty, initializes the shared board tables automatically
+9. Registers you in the team DB
+10. Prints your address, name, and role, then tells you to run `make dev` and open the board UI
 
 For subsequent team members: each member runs `npm run identity:onboard` on their own machine. The script registers them in the same shared DB automatically.
 
@@ -117,8 +118,6 @@ make local                # run server in private mode (ignores mode env var)
 make check                # typecheck + build
 
 npm run identity:onboard  # interactive first-run setup (identity + DB registration)
-npm run team:init         # initialize a new team DB package + register first user
-npm run team:add-user     # add an existing address to the team users table
 npm run identity:whoami   # print current local identity address
 
 make migrate-up           # migrate local JSON state to Upstash Redis

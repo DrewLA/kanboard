@@ -1,5 +1,4 @@
 import { randomBytes, scrypt as scryptCallback, createCipheriv, createDecipheriv } from "node:crypto";
-import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -46,75 +45,55 @@ export async function fileExists(filePath: string): Promise<boolean> {
   }
 }
 
-type PromptTerminal = {
-  input: NodeJS.ReadableStream;
-  output: NodeJS.WritableStream;
-  close: () => void;
-};
-
-function openPromptTerminal(): PromptTerminal {
-  try {
-    const input = createReadStream("/dev/tty");
-    const output = createWriteStream("/dev/tty");
-
-    return {
-      input,
-      output,
-      close: () => {
-        input.close();
-        output.end();
-      }
-    };
-  } catch {
-    if (!process.stdin.isTTY || !process.stderr.isTTY) {
-      throw new Error("Interactive prompts require a TTY.");
-    }
-
-    return {
-      input: process.stdin,
-      output: process.stderr,
-      close: () => {}
-    };
-  }
-}
-
-export async function promptHidden(label: string): Promise<string> {
-  const terminal = openPromptTerminal();
-
-  const rl = createInterface({
-    input: terminal.input,
-    output: terminal.output,
-    terminal: true
-  });
-
-  // Write the label ourselves before suppressing all subsequent echo
-  terminal.output.write(label);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (rl as any)._writeToOutput = (): void => {};
-
-  try {
-    return await rl.question("");
-  } finally {
-    rl.close();
-    terminal.output.write("\n");
-    terminal.close();
-  }
-}
-
 export async function promptLine(label: string): Promise<string> {
-  const terminal = openPromptTerminal();
-  const rl = createInterface({
-    input: terminal.input,
-    output: terminal.output,
-    terminal: true
-  });
+  if (!process.stdin.isTTY) {
+    throw new Error("Interactive prompts require a TTY.");
+  }
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
 
   try {
     return await rl.question(label);
   } finally {
     rl.close();
-    terminal.close();
   }
+}
+
+export async function promptHidden(label: string): Promise<string> {
+  if (!process.stdin.isTTY) {
+    throw new Error("Interactive prompts require a TTY.");
+  }
+
+  process.stdout.write(label);
+  process.stdin.setRawMode(true);
+  process.stdin.resume();
+
+  return new Promise((resolve) => {
+    let value = "";
+
+    const onData = (chunk: Buffer): void => {
+      const ch = chunk.toString("utf8");
+
+      if (ch === "\r" || ch === "\n") {
+        process.stdin.setRawMode(false);
+        process.stdin.pause();
+        process.stdin.removeListener("data", onData);
+        process.stdout.write("\n");
+        resolve(value);
+      } else if (ch === "\u0003") {
+        // Ctrl-C
+        process.stdout.write("\n");
+        process.exit(1);
+      } else if (ch === "\u0008" || ch === "\u007f") {
+        // Backspace
+        value = value.slice(0, -1);
+      } else {
+        value += ch;
+      }
+    };
+
+    process.stdin.on("data", onData);
+  });
 }
 
 async function deriveKey(password: string, salt: Buffer): Promise<Buffer> {

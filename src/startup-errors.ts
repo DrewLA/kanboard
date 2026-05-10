@@ -1,5 +1,5 @@
 import { AppConfig } from "./config";
-import { RepositoryConflictError } from "./repository";
+import { RepositoryConflictError, TeamBoardEmptyError } from "./repository";
 
 export function getStorageLogContext(config: AppConfig): Record<string, string> {
   return {
@@ -15,6 +15,27 @@ export function formatCreatingKanboardMessage(config: AppConfig): string {
   }
 
   return `No existing kanboard state package found at ${config.stateDir}; creating a new kanboard.`;
+}
+
+export function formatTeamBoardEmptyBanner(): string {
+  return [
+    "",
+    "╔════════════════════════════════════════╗",
+    "║   Kanboard — First-Time Team Setup     ║",
+    "╚════════════════════════════════════════╝",
+    "",
+    "The team board database is empty.",
+    "The first team member must run onboarding to initialize it:",
+    "",
+    "  npm run identity:onboard",
+    "",
+    "Then restart the server.",
+    "",
+  ].join("\n");
+}
+
+export function isTeamBoardEmptyError(error: unknown): error is TeamBoardEmptyError {
+  return error instanceof TeamBoardEmptyError;
 }
 
 export function formatStartupError(serverName: string, error: unknown, config?: AppConfig): string {

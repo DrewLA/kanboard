@@ -5,8 +5,8 @@ import { Redis } from "@upstash/redis";
 import { getAddress } from "ethers";
 
 import { getAppConfig } from "../config";
-import { nowIso } from "../model";
-import { StateTable, UserRecord } from "../state-package";
+import { createEmptyTaskboardDocument, nowIso } from "../model";
+import { StateTable, UserRecord, statePackageFromDocument, tableNames } from "../state-package";
 import { createEncryptedIdentity, fileExists, promptHidden, promptLine, writeIdentityFile } from "../identity-store";
 
 const AVATAR_COLORS = [
@@ -62,6 +62,16 @@ async function upsertUserInDb(redis: Redis, dbString: string, user: UserRecord):
   await redis.set(tableKey("users"), JSON.stringify(usersTable));
 }
 
+async function initializeTeamPackageInDb(redis: Redis, dbString: string): Promise<void> {
+  const parsed = parseDbString(dbString);
+  const tableKey = (name: string) => `${parsed.prefix}:table:${name}`;
+  const statePackage = statePackageFromDocument(createEmptyTaskboardDocument());
+
+  for (const tableName of tableNames) {
+    await redis.set(tableKey(tableName), JSON.stringify(statePackage.tables[tableName]));
+  }
+}
+
 async function readExistingAddress(userFile: string): Promise<string | null> {
   try {
     const raw = await readFile(userFile, { encoding: "utf8" });
@@ -90,45 +100,45 @@ async function main(): Promise<void> {
   const identityPath = config.identityFile;
 
   // ── Intro ─────────────────────────────────────────────────────────────────
-  console.error("");
-  console.error("╔════════════════════════════════════════╗");
-  console.error("║     Kanboard — Identity Onboarding     ║");
-  console.error("╚════════════════════════════════════════╝");
-  console.error("");
-  console.error("This sets up your local identity for the board.");
+  console.log("");
+  console.log("╔════════════════════════════════════════╗");
+  console.log("║     Kanboard — Identity Onboarding     ║");
+  console.log("╚════════════════════════════════════════╝");
+  console.log("");
+  console.log("This sets up your local identity for the board.");
   if (config.mode === "team") {
-    console.error("Mode: team  (shared DB)");
-    console.error("Your identity will be written locally and registered in the team database.");
+    console.log("Mode: team  (shared DB)");
+    console.log("Your identity will be written locally and registered in the team database.");
   } else {
-    console.error(`Mode: ${config.mode}  (local only)`);
-    console.error("Your identity will be stored locally.");
+    console.log(`Mode: ${config.mode}  (local only)`);
+    console.log("Your identity will be stored locally.");
   }
-  console.error("");
+  console.log("");
 
   // ── Check for existing identity ──────────────────────────────────────────
   if ((await fileExists(identityPath)) && !force) {
     const existingAddress = await readExistingAddress(config.userFile);
 
-    console.error("");
-    console.error("An identity file already exists at:");
-    console.error(`  ${identityPath}`);
+    console.log("");
+    console.log("An identity file already exists at:");
+    console.log(`  ${identityPath}`);
 
     if (existingAddress) {
-      console.error("");
-      console.error(`Maybe your address is: ${existingAddress}`);
-      console.error("(Cannot be certain — identity.json may have been edited manually.)");
+      console.log("");
+      console.log(`Maybe your address is: ${existingAddress}`);
+      console.log("(Cannot be certain — identity.json may have been edited manually.)");
     }
 
-    console.error("");
+    console.log("");
 
     const confirmed = await promptConfirm("Overwrite existing identity? This cannot be undone. [y/N] ");
 
     if (!confirmed) {
-      console.error("Aborted.");
+      console.log("Aborted.");
       process.exit(0);
     }
 
-    console.error("");
+    console.log("");
   }
 
   // ── Verify DB connection (if configured) ─────────────────────────────────
@@ -136,38 +146,38 @@ async function main(): Promise<void> {
   let isFirstTeamSetup = false;
 
   if (config.dbString) {
-    console.error("Checking database connection...");
+    console.log("Checking database connection...");
 
     try {
       redis = await pingRedis(config.dbString);
-      console.error("  ✓ Connected.");
+      console.log("  ✓ Connected.");
 
       isFirstTeamSetup = !(await checkUsersTableExists(redis, config.dbString));
       if (isFirstTeamSetup) {
-        console.error("  ℹ  No users table found — this looks like a first-time setup.");
-        console.error("     The users table will be created when your profile is written.");
+        console.log("  ℹ  No users table found — this looks like a first-time setup.");
+        console.log("     The users table will be created when your profile is written.");
       } else {
-        console.error("  ✓ Users table found.");
+        console.log("  ✓ Users table found.");
       }
-      console.error("");
+      console.log("");
     } catch (err) {
       console.error(`  ✗ Could not reach the database: ${err instanceof Error ? err.message : String(err)}`);
       console.error("  Check your TASKBOARD_DB_STRING value and ensure the service is reachable.");
-      console.error("");
+      console.log("");
       const proceed = await promptConfirm("Continue without writing to the database? [y/N] ");
 
       if (!proceed) {
-        console.error("Aborted.");
+        console.log("Aborted.");
         process.exit(1);
       }
 
-      console.error("");
+      console.log("");
     }
   }
 
   // ── Profile questions ─────────────────────────────────────────────────────
-  console.error("── Step 1 of 3: Your profile ────────────────────────────────────");
-  console.error("");
+  console.log("── Step 1 of 3: Your profile ────────────────────────────────────");
+  console.log("");
 
   let displayName = "";
 
@@ -186,37 +196,50 @@ async function main(): Promise<void> {
   const email = emailInput.trim() || undefined;
 
   // ── Key generation ────────────────────────────────────────────────────────
-  console.error("");
-  console.error("── Step 2 of 3: Identity key ────────────────────────────────────");
-  console.error("");
-  console.error("A new EVM identity will be generated for this machine.");
-  console.error("The seed phrase is shown once — write it down before continuing.");
-  console.error("");
+  console.log("");
+  console.log("── Step 2 of 3: Identity key ────────────────────────────────────");
+  console.log("");
+  console.log("A new EVM identity will be generated for this machine.");
+  console.log("The seed phrase is shown once — write it down before continuing.");
+  console.log("");
 
-  const password = await promptHidden("Set identity password: ");
-  const confirmation = await promptHidden("Retype identity password: ");
+  let password = "";
+  const maxAttempts = 3;
 
-  if (password.length < 9) {
-    throw new Error("Identity password must be at least 9 characters.");
-  }
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const candidate = await promptHidden("Set identity password: ");
+    const confirmation = await promptHidden("Retype identity password: ");
 
-  if (password !== confirmation) {
-    throw new Error("Identity passwords did not match.");
+    if (candidate.length < 9) {
+      console.error(`  ✗ Password must be at least 9 characters.${attempt < maxAttempts ? " Try again." : ""}`);
+    } else if (candidate !== confirmation) {
+      console.error(`  ✗ Passwords did not match.${attempt < maxAttempts ? " Try again." : ""}`);
+    } else {
+      password = candidate;
+      break;
+    }
+
+    if (attempt === maxAttempts) {
+      console.error("Too many failed attempts.");
+      process.exit(1);
+    }
+
+    console.log("");
   }
 
   const identity = await createEncryptedIdentity(password);
 
-  console.error("");
-  console.error("Seed phrase (write this down now — it will NOT be saved to disk):");
-  console.error("");
-  console.error(`  ${identity.mnemonic}`);
-  console.error("");
+  console.log("");
+  console.log("Seed phrase (write this down now — it will NOT be saved to disk):");
+  console.log("");
+  console.log(`  ${identity.mnemonic}`);
+  console.log("");
 
   // ── Write identity file ───────────────────────────────────────────────────
-  console.error("── Step 3 of 3: Saving identity ─────────────────────────────────");
-  console.error("");
+  console.log("── Step 3 of 3: Saving identity ─────────────────────────────────");
+  console.log("");
   await writeIdentityFile(identityPath, identity.identityFile);
-  console.error(`  ✓ Identity file written to ${path.relative(process.cwd(), identityPath)}`);
+  console.log(`  ✓ Identity file written to ${path.relative(process.cwd(), identityPath)}`);
 
   const timestamp = nowIso();
   const userRecord: UserRecord = {
@@ -236,41 +259,44 @@ async function main(): Promise<void> {
     address: userRecord.id,
     userRecord
   }, null, 2), { encoding: "utf8", mode: 0o600 });
-  console.error(`  ✓ Profile written to ${path.relative(process.cwd(), config.userFile)}`);
+  console.log(`  ✓ Profile written to ${path.relative(process.cwd(), config.userFile)}`);
 
   // ── Write to DB ───────────────────────────────────────────────────────────
   if (redis && config.dbString) {
-    if (isFirstTeamSetup) {
-      console.error("  Creating users table in database...");
-    } else {
-      console.error("  Registering user in database...");
-    }
     try {
+      if (isFirstTeamSetup) {
+        console.log("  Initializing team board tables in database...");
+        await initializeTeamPackageInDb(redis, config.dbString);
+        console.log("  ✓ Team board initialized.");
+      }
+
+      console.log("  Registering user in database...");
       await upsertUserInDb(redis, config.dbString, userRecord);
-      console.error(`  ✓ User record written to database.`);
+      console.log("  ✓ User record written to database.");
     } catch (err) {
-      console.error(`  ✗ Failed to write user to database: ${err instanceof Error ? err.message : String(err)}`);
-      console.error("  Your local identity was saved. Re-run onboarding or use team:add-user to register manually.");
+      console.error(`  ✗ Failed to write to database: ${err instanceof Error ? err.message : String(err)}`);
+      console.error("  Your local identity was saved, but team onboarding did not finish. Fix the DB issue and run onboarding again.");
+      process.exit(1);
     }
   }
 
   // ── Done ──────────────────────────────────────────────────────────────────
   const boardUrl = `http://${config.host}:${config.port}`;
-  console.error("");
-  console.error("╔════════════════════════════════════════╗");
-  console.error("║           Setup complete! ✓            ║");
-  console.error("╚════════════════════════════════════════╝");
-  console.error("");
-  console.error(`  Address : ${userRecord.id}`);
-  console.error(`  Name    : ${userRecord.name}`);
-  console.error(`  Role    : ${userRecord.role}`);
-  console.error("");
-  console.error("  Start the board server:");
-  console.error("");
-  console.error("    make dev");
-  console.error("");
-  console.error(`  Then open: ${boardUrl}`);
-  console.error("");
+  console.log("");
+  console.log("╔════════════════════════════════════════╗");
+  console.log("║           Setup complete! ✓            ║");
+  console.log("╚════════════════════════════════════════╝");
+  console.log("");
+  console.log(`  Address : ${userRecord.id}`);
+  console.log(`  Name    : ${userRecord.name}`);
+  console.log(`  Role    : ${userRecord.role}`);
+  console.log("");
+  console.log("  Start the board server:");
+  console.log("");
+  console.log("    make dev");
+  console.log("");
+  console.log(`  Then open: ${boardUrl}`);
+  console.log("");
 }
 
 void main().catch((error) => {

@@ -62,7 +62,7 @@ import {
   updateUserStory,
   updateWorkLink
 } from "./taskboard-service";
-import { formatCreatingKanboardMessage, formatStartupError, getStorageLogContext } from "./startup-errors";
+import { formatCreatingKanboardMessage, formatStartupError, formatTeamBoardEmptyBanner, isTeamBoardEmptyError, getStorageLogContext } from "./startup-errors";
 
 function parseBody<T>(schema: { parse: (value: unknown) => T }, body: unknown): T {
   return schema.parse(body);
@@ -272,6 +272,10 @@ async function start(): Promise<void> {
 }
 
 void start().catch((error) => {
+  if (isTeamBoardEmptyError(error)) {
+    process.stdout.write(formatTeamBoardEmptyBanner());
+    process.exit(0);
+  }
   console.error(formatStartupError("kanboard HTTP server", error, startupConfig));
   process.exit(1);
 });

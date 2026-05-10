@@ -22,8 +22,8 @@ This script:
 5. **Password**: Prompts you to set and confirm an identity password
 6. **Local storage**: Writes encrypted identity to `.kanboard/identity.json` and profile to `.kanboard/user.json`
 7. **DB registration** (if configured):
+   - If the team DB is empty, initializes the full shared board package automatically
    - Registers your profile in the team `users` table
-   - If the table does not exist, creates it automatically
    - Shows step-by-step progress as it writes
 8. **Summary**: Prints your address, name, and role, then tells you to run `make dev` and open the board
 
@@ -37,33 +37,7 @@ To generate a new identity:
 npm run identity:onboard --force
 ```
 
-This overwrites the existing identity file. Your old EVM address will no longer work; if you want to keep the same address in the team DB, manually add it via `team:add-user` after onboarding.
-
-## Team Initialization (First-Time Setup)
-
-If you are setting up a new team board from scratch and want to pre-create the team DB package before any members onboard:
-
-```bash
-npm run team:init -- <admin-address> "Admin Name" "admin"
-```
-
-This creates:
-
-- The initial `users` table with the admin user registered
-- Empty tables for epics, features, stories, tasks, comments, links, and metadata
-- A new kanboard package at the configured DB prefix
-
-Then, subsequent team members can run `npm run identity:onboard` and automatically register themselves.
-
-## Add an Existing Address to the Team
-
-If you have an EVM address (from `npm run identity:whoami` or saved from a previous onboarding) and want to add it to a team without re-running the full onboarding:
-
-```bash
-npm run team:add-user -- <existing-address> "User Name" "role"
-```
-
-This registers the address in the team `users` table without requiring the local identity password.
+This overwrites the existing identity file. Your old EVM address will no longer be usable from this machine; rerun onboarding to register the new address in the shared team DB.
 
 ## Verify Current Identity
 
@@ -86,6 +60,7 @@ Team mode requires:
 On startup:
 
 - The backend derives the public address from the env private key (if set) or from the decrypted identity file
+- If the team DB is empty, the first successful `npm run identity:onboard` initializes it
 - It checks that the address is registered in the remote `users` table
 - If registered, the board loads and becomes ready for mutations
 - If not registered, the board loads but mutations are blocked until identity unlock succeeds
