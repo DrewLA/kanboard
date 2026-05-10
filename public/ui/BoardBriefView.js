@@ -71,6 +71,16 @@ export function parseMarkdown(markdown, previous) {
 export function BoardBriefView({ boardBrief, onSave }) {
   const [draft, setDraft] = useState(() => buildMarkdown(boardBrief));
   const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await onSave(parseMarkdown(draft, boardBrief || {}));
+    } finally {
+      setSaving(false);
+    }
+  }
 
   useEffect(() => {
     setDraft(buildMarkdown(boardBrief));
@@ -92,10 +102,10 @@ export function BoardBriefView({ boardBrief, onSave }) {
             onClick=${() => { setDraft(buildMarkdown(boardBrief)); setDirty(false); }}
           >Reset</button>
           <button
-            className="button button-solid"
-            disabled=${!dirty}
-            onClick=${() => onSave(parseMarkdown(draft, boardBrief || {}))}
-          >Save</button>
+            className=${`button button-solid${saving ? " button--loading" : ""}`}
+            disabled=${!dirty || saving}
+            onClick=${handleSave}
+          >${saving ? "Saving" : "Save"}</button>
         </div>
       </div>
 

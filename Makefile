@@ -1,6 +1,6 @@
 SHELL := /bin/zsh
 
-.PHONY: install build dev start local mcp mcp-local check identity-onboard team-init team-add-user migrate-up migrate-down
+.PHONY: install build dev start local mcp mcp-local check identity-onboard identity-whoami team-init team-add-user migrate-up migrate-down
 
 install:
 	npm install
@@ -29,6 +29,9 @@ check:
 
 identity-onboard:
 	npm run identity:onboard
+
+identity-whoami:
+	npm run identity:whoami
 
 team-init:
 	npm run team:init

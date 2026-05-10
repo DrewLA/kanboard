@@ -6,7 +6,7 @@ import { Redis } from "@upstash/redis";
 
 import { AppConfig, assertRedisConfig } from "./config";
 import { deriveAddress, signMutationEnvelope, verifyMutationEnvelope } from "./identity";
-import { decryptPrivateKey, fileExists, promptHidden, readIdentityFile } from "./identity-store";
+import { decryptPrivateKey, fileExists, readIdentityFile } from "./identity-store";
 import { BoardNodeType, WorkItemType, createEmptyTaskboardDocument, normalizeTaskboardDocument, TaskboardDocument, nowIso } from "./model";
 import {
   PackageDiff,
@@ -56,6 +56,24 @@ export class RepositoryDataError extends Error {
   }
 }
 
+export type RepositoryAccessErrorCode =
+  | "KB_IDENTITY_LOCKED"
+  | "KB_IDENTITY_SETUP_REQUIRED"
+  | "KB_IDENTITY_NOT_REGISTERED"
+  | "KB_IDENTITY_FILE_MISMATCH";
+
+export class RepositoryAccessError extends Error {
+  readonly code: RepositoryAccessErrorCode;
+  readonly recovery: string;
+
+  constructor(code: RepositoryAccessErrorCode, message: string, recovery: string) {
+    super(message);
+    this.name = "RepositoryAccessError";
+    this.code = code;
+    this.recovery = recovery;
+  }
+}
+
 export interface LoadTaskboardOptions {
   onCreate?: (document: TaskboardDocument) => void | Promise<void>;
 }
@@ -66,11 +84,20 @@ export interface SaveTaskboardOptions {
   summary?: string;
 }
 
+export interface IdentityStatus {
+  required: boolean;
+  unlocked: boolean;
+  address?: string;
+  registered?: boolean;
+}
+
 export interface TaskboardRepository {
   load(options?: LoadTaskboardOptions): Promise<TaskboardDocument>;
   save(document: TaskboardDocument, expectedRevision: number, options?: SaveTaskboardOptions): Promise<TaskboardDocument>;
   listUsers?(): Promise<UserRecord[]>;
   getCurrentUser?(): Promise<UserRecord | null>;
+  getIdentityStatus?(): Promise<IdentityStatus>;
+  unlockIdentity?(password: string): Promise<IdentityStatus>;
 }
 
 function delay(milliseconds: number): Promise<void> {
@@ -482,7 +509,6 @@ class ModularTaskboardRepository implements TaskboardRepository {
     }
 
     if (this.options.mode === "team") {
-      await this.assertTeamUserRegistered(statePackage);
       await this.options.localMirror?.replacePackage(statePackage);
     }
 
@@ -553,6 +579,78 @@ class ModularTaskboardRepository implements TaskboardRepository {
     return statePackage.tables.users.rows.private?.value ?? null;
   }
 
+  async getIdentityStatus(): Promise<IdentityStatus> {
+    if (this.options.mode !== "team") {
+      return {
+        required: false,
+        unlocked: true
+      };
+    }
+
+    const actorPrivateKey = await this.getActorPrivateKey();
+
+    if (actorPrivateKey) {
+      const statePackage = await this.primary.loadPackage();
+      const actor = deriveAddress(actorPrivateKey);
+
+      return {
+        required: true,
+        unlocked: true,
+        address: actor,
+        registered: Boolean(statePackage.tables.users.rows[actor])
+      };
+    }
+
+    if (!this.options.identityFile || !(await fileExists(this.options.identityFile))) {
+      return {
+        required: true,
+        unlocked: false
+      };
+    }
+
+    const identityFile = await readIdentityFile(this.options.identityFile);
+    const statePackage = await this.primary.loadPackage();
+
+    return {
+      required: true,
+      unlocked: false,
+      address: identityFile.address,
+      registered: Boolean(statePackage.tables.users.rows[identityFile.address])
+    };
+  }
+
+  async unlockIdentity(password: string): Promise<IdentityStatus> {
+    const actorPrivateKey = await this.resolveActorPrivateKey(password);
+
+    if (!actorPrivateKey) {
+      throw new RepositoryAccessError(
+        "KB_IDENTITY_SETUP_REQUIRED",
+        `TASKBOARD_MODE=team requires TASKBOARD_EVM_PRIVATE_KEY or encrypted identity file ${this.options.identityFile ?? ".kanboard/identity.json"}.`,
+        "Run npm run identity:onboard. Then unlock identity with /api/identity/unlock (or set TASKBOARD_EVM_PRIVATE_KEY) before retrying team writes."
+      );
+    }
+
+    const statePackage = await this.primary.loadPackage();
+    const actor = deriveAddress(actorPrivateKey);
+
+    if (!statePackage.tables.users.rows[actor]) {
+      throw new RepositoryAccessError(
+        "KB_IDENTITY_NOT_REGISTERED",
+        `Team board user ${actor} is not registered.`,
+        "Send this address to the team admin and ask them to add it to the users table, then retry."
+      );
+    }
+
+    await this.options.localMirror?.replacePackage(statePackage);
+
+    return {
+      required: true,
+      unlocked: true,
+      address: actor,
+      registered: true
+    };
+  }
+
   private async ensurePrivateUser(statePackage: StatePackage): Promise<void> {
     if (this.options.mode === "team") {
       return;
@@ -584,19 +682,20 @@ class ModularTaskboardRepository implements TaskboardRepository {
       return this.options.actorPrivateKey;
     }
 
+    return undefined;
+  }
+
+  private async resolveActorPrivateKey(password?: string): Promise<string | undefined> {
+    if (this.options.actorPrivateKey) {
+      return this.options.actorPrivateKey;
+    }
+
     if (!this.options.identityFile || !(await fileExists(this.options.identityFile))) {
       return undefined;
     }
 
-    let password: string;
-
-    try {
-      password = await promptHidden(`Password for ${this.options.identityFile}: `);
-    } catch (error) {
-      throw new Error(
-        `${error instanceof Error ? error.message : String(error)} ` +
-        "Set TASKBOARD_EVM_PRIVATE_KEY or run the local backend in a TTY so the encrypted identity can be unlocked."
-      );
+    if (!password) {
+      return undefined;
     }
 
     const identityFile = await readIdentityFile(this.options.identityFile);
@@ -604,30 +703,15 @@ class ModularTaskboardRepository implements TaskboardRepository {
     const address = deriveAddress(privateKey);
 
     if (address !== identityFile.address) {
-      throw new Error(`Encrypted identity file address ${identityFile.address} does not match decrypted private key address ${address}.`);
+      throw new RepositoryAccessError(
+        "KB_IDENTITY_FILE_MISMATCH",
+        `Encrypted identity file address ${identityFile.address} does not match decrypted private key address ${address}.`,
+        "Recreate local identity with npm run identity:onboard or restore a valid identity file backup."
+      );
     }
 
     this.options.actorPrivateKey = privateKey;
     return privateKey;
-  }
-
-  private async assertTeamUserRegistered(statePackage: StatePackage): Promise<void> {
-    const actorPrivateKey = await this.getActorPrivateKey();
-
-    if (!actorPrivateKey) {
-      throw new Error(
-        `TASKBOARD_MODE=team requires TASKBOARD_EVM_PRIVATE_KEY or encrypted identity file ${this.options.identityFile ?? ".kanboard/identity.json"}. ` +
-        "Run npm run identity:onboard, then send the printed address to the team admin."
-      );
-    }
-
-    const actor = deriveAddress(actorPrivateKey);
-
-    if (!statePackage.tables.users.rows[actor]) {
-      throw new Error(
-        `Team board user ${actor} is not registered. Send this address to the team admin and ask them to add it to the users table.`
-      );
-    }
   }
 
   private async buildMutation(
@@ -642,7 +726,11 @@ class ModularTaskboardRepository implements TaskboardRepository {
     const actorPrivateKey = await this.getActorPrivateKey();
 
     if (!actorPrivateKey) {
-      throw new Error("TASKBOARD_MODE=team requires TASKBOARD_EVM_PRIVATE_KEY or an unlocked encrypted identity before mutating the team board.");
+      throw new RepositoryAccessError(
+        "KB_IDENTITY_LOCKED",
+        "Team mutations are locked until identity is unlocked.",
+        "Unlock identity with /api/identity/unlock (or configure TASKBOARD_EVM_PRIVATE_KEY), then retry the MCP write call."
+      );
     }
 
     const envelope = await signMutationEnvelope(actorPrivateKey, metadataProjectId(statePackage), {

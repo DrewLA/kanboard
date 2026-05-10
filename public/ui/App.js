@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "https://esm.sh/react@18.3.1
 import htm from "https://esm.sh/htm@3.1.1";
 import { request, getErrorMessage } from "./api.js";
 import { parseHashView, parseLineList, parseCommaList, getTaskContexts } from "./utils.js";
+
 import { Header } from "./Header.js";
 import { BoardView } from "./BoardView.js";
 import { BacklogView } from "./BacklogView.js";
@@ -10,6 +11,109 @@ import { FormModal } from "./Modal.js";
 import { AgentsPane } from "./AgentsPane.js";
 
 const html = htm.bind(React.createElement);
+
+// --- Skeleton Components ---
+function SkeletonBoard() {
+  return html`
+    <section className="view-shell">
+      <div
+        className="panel-toolbar glass-panel skeleton skeleton-bar"
+        style=${{ height: "38px", width: "100%", maxWidth: "600px", marginBottom: "10px" }}
+      ></div>
+      <div className="kanban-grid">
+        ${Array.from({ length: 6 }).map((_, i) => html`
+          <section key=${i} className="kanban-col glass-panel">
+            <header
+              className="kanban-col-header skeleton skeleton-bar"
+              style=${{ height: "32px", width: "90%", margin: "10px auto" }}
+            ></header>
+            <div className="kanban-cards">
+              ${Array.from({ length: 3 }).map((_, j) => html`
+                <div key=${j} className="task-card skeleton skeleton-card" style=${{ height: "72px" }}></div>
+              `)}
+            </div>
+          </section>
+        `)}
+      </div>
+    </section>
+  `;
+}
+
+function SkeletonBacklog() {
+  return html`
+    <section className="view-shell">
+      <div
+        className="panel-toolbar glass-panel skeleton skeleton-bar"
+        style=${{ height: "38px", width: "180px", marginBottom: "10px" }}
+      ></div>
+      <div className="backlog-wrap">
+        ${Array.from({ length: 3 }).map((_, i) => html`
+          <section key=${i} className="backlog-node glass-panel">
+            <header
+              className="backlog-node-header skeleton skeleton-bar"
+              style=${{ height: "32px", width: "98%", margin: "8px auto" }}
+            ></header>
+            <div className="backlog-children">
+              ${Array.from({ length: 2 }).map((_, j) => html`
+                <section key=${j} className="backlog-node feature glass-panel">
+                  <header
+                    className="backlog-node-header skeleton skeleton-bar"
+                    style=${{ height: "28px", width: "95%", margin: "6px auto" }}
+                  ></header>
+                  <div className="backlog-children">
+                    ${Array.from({ length: 1 }).map((_, k) => html`
+                      <section key=${k} className="backlog-node story glass-panel">
+                        <header
+                          className="backlog-node-header skeleton skeleton-bar"
+                          style=${{ height: "24px", width: "92%", margin: "4px auto" }}
+                        ></header>
+                      </section>
+                    `)}
+                  </div>
+                </section>
+              `)}
+            </div>
+          </section>
+        `)}
+      </div>
+    </section>
+  `;
+}
+
+function SkeletonBrief() {
+  return html`
+    <section className="view-shell brief-view">
+      <div
+        className="brief-header glass-panel skeleton skeleton-bar"
+        style=${{ height: "48px", width: "98%", margin: "10px auto" }}
+      ></div>
+      <div className="markdown-canvas glass-panel">
+        <div
+          className="markdown-canvas-header skeleton skeleton-bar"
+          style=${{ height: "32px", width: "90%", margin: "10px auto" }}
+        ></div>
+        <div
+          className="skeleton skeleton-block"
+          style=${{ height: "220px", width: "96%", margin: "12px auto 0 auto", borderRadius: "12px" }}
+        ></div>
+      </div>
+    </section>
+  `;
+}
+
+function SkeletonAgentsPane({ open }) {
+  return html`
+    <aside className=${`agents-pane glass-panel${open ? " agents-pane--open" : ""}`} aria-label="Agents" aria-hidden=${!open}>
+      <div className="agents-header skeleton skeleton-bar" style=${{ height: "32px", width: "98%", margin: "10px auto" }}></div>
+      <div className="agents-mcp-bar skeleton skeleton-bar" style=${{ height: "22px", width: "90%", margin: "8px auto" }}></div>
+      <div className="agents-body">
+        <div className="agents-section-label skeleton skeleton-bar" style=${{ height: "18px", width: "60%", margin: "10px auto" }}></div>
+        <div className="agent-card skeleton skeleton-card" style=${{ height: "54px", width: "96%", margin: "10px auto" }}></div>
+        <div className="agent-card skeleton skeleton-card" style=${{ height: "54px", width: "96%", margin: "10px auto" }}></div>
+      </div>
+    </aside>
+  `;
+}
 
 export function App() {
   const [activeView, setActiveView] = useState(parseHashView());
@@ -20,6 +124,20 @@ export function App() {
   const [modalStack, setModalStack] = useState([]);
   const [confirmState, setConfirmState] = useState(null);
   const [agentsOpen, setAgentsOpen] = useState(false);
+  const [unlockPassword, setUnlockPassword] = useState("");
+  const [unlockError, setUnlockError] = useState("");
+  const [unlocking, setUnlocking] = useState(false);
+  const [unlockRefreshing, setUnlockRefreshing] = useState(false);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [pendingOp, setPendingOp] = useState(false);
+  const [flashError, setFlashError] = useState(null);
+  const [modalError, setModalError] = useState(null);
+
+  useEffect(() => {
+    if (!flashError) return;
+    const t = setTimeout(() => setFlashError(null), 7000);
+    return () => clearTimeout(t);
+  }, [flashError]);
 
   const lookup = useMemo(() => {
     const epics = taskboard?.epics || [];
@@ -48,12 +166,14 @@ export function App() {
   }, [taskboard]);
 
   async function reload() {
-    const [nextHealth, nextTaskboard] = await Promise.all([
+    const [nextHealth, nextTaskboard, nextUser] = await Promise.all([
       request("/api/health"),
-      request("/api/taskboard")
+      request("/api/taskboard"),
+      request("/api/users/me").catch(() => null)
     ]);
     setHealth(nextHealth);
     setTaskboard(nextTaskboard);
+    setCurrentUser(nextUser);
     setExpanded((prev) => {
       if (prev.size) return prev;
       const seed = new Set();
@@ -66,7 +186,7 @@ export function App() {
   }
 
   useEffect(() => {
-    reload().catch((err) => { setHealth(null); window.alert(getErrorMessage(err)); });
+    reload().catch((err) => { setHealth(null); setFlashError(getErrorMessage(err)); });
   }, []);
 
   useEffect(() => {
@@ -74,6 +194,9 @@ export function App() {
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
+
+  const identityStatus = health?.identity || null;
+  const needsUnlock = Boolean(identityStatus?.required && !identityStatus?.unlocked && !unlockRefreshing);
 
   function childSelectionField(formType) {
     if (formType === "create-epic") return "epicId";
@@ -83,6 +206,7 @@ export function App() {
   }
 
   async function submitModal(formType, formData) {
+    setPendingOp(true);
     try {
       let result = null;
       switch (formType) {
@@ -176,6 +300,7 @@ export function App() {
           break;
       }
       await reload();
+      setPendingOp(false);
       // This relies on synchronous create responses returning the created entity immediately.
       // Revisit if stacked creates move to async background refreshes or optimistic writes.
       setModalStack((prev) => {
@@ -201,18 +326,22 @@ export function App() {
         return next;
       });
     } catch (err) {
-      window.alert(getErrorMessage(err));
+      setPendingOp(false);
+      setModalError(getErrorMessage(err));
     }
   }
 
   async function moveTask(taskId, status) {
     const task = lookup.findTask(taskId);
     if (!task || task.status === status) return;
+    setPendingOp(true);
     try {
       await request(`/api/tasks/${taskId}`, { method: "PATCH", body: JSON.stringify({ status }) });
       await reload();
     } catch (err) {
-      window.alert(getErrorMessage(err));
+      setFlashError(getErrorMessage(err));
+    } finally {
+      setPendingOp(false);
     }
   }
 
@@ -230,27 +359,34 @@ export function App() {
   async function deletePath(path, message) {
     const confirmed = await showConfirm(message);
     if (!confirmed) return;
+    setPendingOp(true);
     try {
       await request(path, { method: "DELETE", body: JSON.stringify({}) });
       await reload();
     } catch (err) {
-      window.alert(getErrorMessage(err));
+      setFlashError(getErrorMessage(err));
+    } finally {
+      setPendingOp(false);
     }
   }
 
   function openModal(type, title, entity = null, parentId = "") {
+    setModalError(null);
     setModalStack([{ type, title, entity, parentId, savedValues: null }]);
   }
 
   function pushModal(type, title, entity = null, parentId = "") {
+    setModalError(null);
     setModalStack((prev) => [...prev, { type, title, entity, parentId, savedValues: null }]);
   }
 
   function popModal() {
+    setModalError(null);
     setModalStack((prev) => prev.slice(0, -1));
   }
 
   function clearModals() {
+    setModalError(null);
     setModalStack([]);
   }
 
@@ -289,11 +425,14 @@ export function App() {
   }
 
   async function saveBoardBrief(payload) {
+    setPendingOp(true);
     try {
       await request("/api/board-brief", { method: "PUT", body: JSON.stringify(payload) });
       await reload();
     } catch (err) {
-      window.alert(getErrorMessage(err));
+      setFlashError(getErrorMessage(err));
+    } finally {
+      setPendingOp(false);
     }
   }
 
@@ -302,10 +441,47 @@ export function App() {
     window.location.hash = `/${view}`;
   }
 
-  const refreshSafe = () => reload().catch((err) => window.alert(getErrorMessage(err)));
-  const boardBrief = taskboard?.boardBrief || {};
 
-  if (!taskboard) {
+  async function unlockIdentity(password) {
+    setUnlocking(true);
+    setUnlockError("");
+
+    try {
+      const result = await request("/api/identity/unlock", {
+        method: "POST",
+        body: JSON.stringify({ password })
+      });
+
+      setUnlockPassword("");
+
+      // Close the unlock modal immediately on a successful response and let the
+      // app refresh behind the normal loading skeleton.
+      setHealth((prev) => prev ? {
+        ...prev,
+        identity: prev.identity ? { ...prev.identity, unlocked: true } : prev.identity
+      } : prev);
+      setCurrentUser(result?.currentUser ?? null);
+      setUnlockRefreshing(true);
+      setUnlocking(false);
+
+      try {
+        await reload();
+      } finally {
+        setUnlockRefreshing(false);
+      }
+    } catch (err) {
+      setUnlockError(getErrorMessage(err));
+      setUnlocking(false);
+    }
+  }
+
+  const refreshSafe = () => reload().catch((err) => setFlashError(getErrorMessage(err)));
+  const boardBrief = taskboard?.boardBrief || {};
+  const showLoadingShell = !taskboard || unlockRefreshing;
+
+
+  // --- Skeleton loading logic ---
+  if (showLoadingShell) {
     return html`
       <main className="app-shell">
         <${Header}
@@ -314,8 +490,14 @@ export function App() {
           activeView=${activeView}
           onViewChange=${navigateTo}
           onRefresh=${refreshSafe}
+          onToggleAgents=${() => setAgentsOpen((v) => !v)}
+          agentsOpen=${agentsOpen}
+          currentUser=${currentUser}
         />
-        <p className="empty-major">Loading taskboard...</p>
+        ${activeView === "board" ? html`<${SkeletonBoard} />` : null}
+        ${activeView === "backlog" ? html`<${SkeletonBacklog} />` : null}
+        ${activeView === "brief" ? html`<${SkeletonBrief} />` : null}
+        <${SkeletonAgentsPane} open=${agentsOpen} />
       </main>
     `;
   }
@@ -324,6 +506,12 @@ export function App() {
     <main className="app-shell">
       <div className="ambient ambient-a"></div>
       <div className="ambient ambient-b"></div>
+      ${flashError ? html`
+        <div className="flash-error" role="alert">
+          <span className="flash-error-text">${flashError}</span>
+          <button className="flash-error-close" type="button" aria-label="Dismiss" onClick=${() => setFlashError(null)}>✕</button>
+        </div>
+      ` : null}
 
       <${Header}
         productName=${boardBrief.productName || "Kanboard"}
@@ -333,6 +521,7 @@ export function App() {
         onRefresh=${refreshSafe}
         onToggleAgents=${() => setAgentsOpen((v) => !v)}
         agentsOpen=${agentsOpen}
+        currentUser=${currentUser}
       />
 
       ${activeView === "board" ? html`
@@ -370,6 +559,8 @@ export function App() {
           onClose=${popModal}
           onCloseAll=${clearModals}
           onSubmit=${submitModal}
+          submitting=${pendingOp}
+          submitError=${modalError}
           taskboard=${taskboard}
           activeFilters=${filters}
           lookup=${lookup}
@@ -379,13 +570,58 @@ export function App() {
       ` : null}
 
       ${confirmState ? html`
-        <div className="modal-backdrop" role="presentation" onClick=${() => dismissConfirm(false)}>
+        <div className="modal-backdrop" role="presentation" onClick=${() => !pendingOp && dismissConfirm(false)}>
           <div className="modal-shell modal-shell--sm" role="alertdialog" aria-modal="true" onClick=${(e) => e.stopPropagation()}>
             <p className="confirm-message">${confirmState.message}</p>
             <div className="form-footer">
-              <button className="button button-ghost" type="button" onClick=${() => dismissConfirm(false)}>Cancel</button>
-              <button className="button button-danger" type="button" onClick=${() => dismissConfirm(true)}>Delete</button>
+              <button className="button button-ghost" type="button" disabled=${pendingOp} onClick=${() => dismissConfirm(false)}>Cancel</button>
+              <button className=${`button button-danger${pendingOp ? " button--loading" : ""}`} type="button" disabled=${pendingOp} onClick=${() => dismissConfirm(true)}>${pendingOp ? "Deleting" : "Delete"}</button>
             </div>
+          </div>
+        </div>
+      ` : null}
+
+
+      ${needsUnlock ? html`
+        <div className="modal-backdrop" role="presentation">
+          <div className="modal-shell modal-shell--sm unlock-shell" role="dialog" aria-modal="true" aria-label="Unlock team identity">
+            <div className="modal-header">
+              <h2>Unlock Team Identity</h2>
+            </div>
+            <form
+              className="form-grid"
+              onSubmit=${(e) => {
+                e.preventDefault();
+                if (!unlocking) unlockIdentity(unlockPassword);
+              }}
+              autoComplete="off"
+            >
+              <p className="unlock-copy">
+                This board is running, but team mutations stay locked until the local identity file is unlocked in the browser.
+              </p>
+              ${identityStatus?.address ? html`
+                <div className="inline-note unlock-address">
+                  Address: ${identityStatus.address}${identityStatus.registered === false ? " (not registered on this board)" : ""}
+                </div>
+              ` : null}
+              <label>
+                Identity password
+                <input
+                  type="password"
+                  value=${unlockPassword}
+                  onInput=${(e) => setUnlockPassword(e.currentTarget.value)}
+                  autoFocus
+                  required
+                  disabled=${unlocking}
+                />
+              </label>
+              ${unlockError ? html`<div className="unlock-error">${unlockError}</div>` : null}
+              <div className="form-footer">
+                <button className=${`button button-solid${unlocking ? " button--loading" : ""}`} type="submit" disabled=${unlocking}>
+                  ${unlocking ? "Unlocking" : "Unlock"}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       ` : null}

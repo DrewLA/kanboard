@@ -35,6 +35,7 @@ import {
 import { TaskboardRepository } from "./repository";
 
 let writeQueue: Promise<void> = Promise.resolve();
+let activeMutationEditor: string | undefined;
 
 export class NotFoundError extends Error {
   readonly statusCode = 404;
@@ -361,7 +362,7 @@ function touchBoardNodeLineage(
 ): void {
   switch (nodeType) {
     case "epic":
-      touchEntity(node, timestamp);
+      touchEditableEntity(node, timestamp);
       return;
     case "feature":
       touchFeatureLineage(document, node as Feature, timestamp);
@@ -426,17 +427,25 @@ function touchEntity(entity: { updatedAt: string }, timestamp: string): void {
   entity.updatedAt = timestamp;
 }
 
+function touchEditableEntity(entity: { updatedAt: string; updatedBy?: string }, timestamp: string): void {
+  touchEntity(entity, timestamp);
+
+  if (activeMutationEditor) {
+    entity.updatedBy = activeMutationEditor;
+  }
+}
+
 function touchFeatureLineage(document: TaskboardDocument, feature: Feature, timestamp: string): void {
-  touchEntity(feature, timestamp);
+  touchEditableEntity(feature, timestamp);
 
   const epic = document.epics[feature.epicId];
   if (epic) {
-    touchEntity(epic, timestamp);
+    touchEditableEntity(epic, timestamp);
   }
 }
 
 function touchStoryLineage(document: TaskboardDocument, story: UserStory, timestamp: string): void {
-  touchEntity(story, timestamp);
+  touchEditableEntity(story, timestamp);
 
   const feature = document.features[story.featureId];
   if (feature) {
@@ -445,7 +454,7 @@ function touchStoryLineage(document: TaskboardDocument, story: UserStory, timest
 }
 
 function touchTaskLineage(document: TaskboardDocument, task: Task, timestamp: string): void {
-  touchEntity(task, timestamp);
+  touchEditableEntity(task, timestamp);
 
   const story = document.userStories[task.storyId];
   if (story) {
@@ -655,7 +664,7 @@ function deleteFeatureFromDocument(document: TaskboardDocument, featureId: strin
 
   epic.featureIds = removeValue(epic.featureIds, featureId);
   delete document.features[featureId];
-  touchEntity(epic, timestamp);
+  touchEditableEntity(epic, timestamp);
 }
 
 function deleteEpicFromDocument(document: TaskboardDocument, epicId: string, timestamp: string): void {
@@ -756,17 +765,26 @@ async function mutateDocument<T>(
   buildPlan: (document: TaskboardDocument) => MutationPlan<T>
 ): Promise<T> {
   return runSerializedWrite(async () => {
-    const document = await repository.load();
-    const plan = buildPlan(document);
-    const currentRevision = document.revision;
-    const result = plan.apply(document);
-    document.revision = currentRevision + 1;
-    document.recentMutations = [];
-    await repository.save(document, currentRevision, {
-      scopes: plan.scopes,
-      summary: plan.summary
-    });
-    return result;
+    const previousEditor = activeMutationEditor;
+    const actor = await repository.getCurrentUser?.();
+    const actorName = actor?.name?.trim();
+    activeMutationEditor = actorName || undefined;
+
+    try {
+      const document = await repository.load();
+      const plan = buildPlan(document);
+      const currentRevision = document.revision;
+      const result = plan.apply(document);
+      document.revision = currentRevision + 1;
+      document.recentMutations = [];
+      await repository.save(document, currentRevision, {
+        scopes: plan.scopes,
+        summary: plan.summary
+      });
+      return result;
+    } finally {
+      activeMutationEditor = previousEditor;
+    }
   });
 }
 
@@ -880,7 +898,8 @@ export async function updateBoardBrief(
         nextDocument.boardBrief = {
           ...nextDocument.boardBrief,
           ...nextPatch,
-          updatedAt: nowIso()
+          updatedAt: nowIso(),
+          updatedBy: activeMutationEditor || nextDocument.boardBrief.updatedBy
         };
 
         return nextDocument.boardBrief;
@@ -923,7 +942,8 @@ export async function createEpic(
       comments: [],
       featureIds: [],
       createdAt: timestamp,
-      updatedAt: timestamp
+      updatedAt: timestamp,
+      updatedBy: activeMutationEditor
     };
 
     return {
@@ -952,7 +972,7 @@ export async function updateEpic(
       apply: (nextDocument) => {
         const nextEpic = requireEpic(nextDocument, epicId);
         Object.assign(nextEpic, patch, { alias: nextAlias });
-        touchEntity(nextEpic, nowIso());
+        touchEditableEntity(nextEpic, nowIso());
         return nextEpic;
       }
     };
@@ -1011,7 +1031,8 @@ export async function createFeature(
       comments: [],
       storyIds: [],
       createdAt: timestamp,
-      updatedAt: timestamp
+      updatedAt: timestamp,
+      updatedBy: activeMutationEditor
     };
 
     return {
@@ -1021,7 +1042,7 @@ export async function createFeature(
         const nextEpic = requireEpicReference(nextDocument, input.epicId, input.epicAlias);
         nextDocument.features[feature.id] = feature;
         nextEpic.featureIds.push(feature.id);
-        touchEntity(nextEpic, timestamp);
+        touchEditableEntity(nextEpic, timestamp);
         return feature;
       }
     };
@@ -1102,7 +1123,8 @@ export async function createUserStory(
       acceptanceCriteria: input.acceptanceCriteria,
       taskIds: [],
       createdAt: timestamp,
-      updatedAt: timestamp
+      updatedAt: timestamp,
+      updatedBy: activeMutationEditor
     };
 
     return {
@@ -1194,7 +1216,8 @@ export async function createTask(
       estimate: input.estimate,
       tags: input.tags,
       createdAt: timestamp,
-      updatedAt: timestamp
+      updatedAt: timestamp,
+      updatedBy: activeMutationEditor
     };
 
     return {

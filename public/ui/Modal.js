@@ -20,7 +20,6 @@ function buildModalBody(modal, taskboard, activeFilters, lookup, onSwitchModal) 
       <label>Success criteria<textarea name="successCriteria" rows="3" defaultValue=${b.successCriteria || ""}></textarea></label>
       <label>Current focus<textarea name="currentFocus" rows="3" defaultValue=${b.currentFocus || ""}></textarea></label>
       <label>Implementation notes<textarea name="implementationNotes" rows="6" defaultValue=${b.implementationNotes || ""}></textarea></label>
-      ${b.updatedAt ? html`<div className="inline-note">Updated ${formatDate(b.updatedAt)}</div>` : null}
     `;
   }
 
@@ -157,7 +156,7 @@ function buildModalBody(modal, taskboard, activeFilters, lookup, onSwitchModal) 
   return html`<div className="inline-note">No form available.</div>`;
 }
 
-export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit, taskboard, activeFilters, lookup, onSwitchModal, onSaveValues }) {
+export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit, submitting = false, submitError = null, taskboard, activeFilters, lookup, onSwitchModal, onSaveValues }) {
   const formRef = useRef(null);
 
   if (!modal) return null;
@@ -188,6 +187,16 @@ export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit
   }
 
   const body = buildModalBody(modal, taskboard, activeFilters, lookup, handleSwitchModal);
+  const modalEntity = modal.entity || null;
+  const showEditMeta = Boolean(
+    modalEntity?.updatedAt &&
+    (modal.type === "board-brief" || modal.type.startsWith("edit-"))
+  );
+  const editMetaText = showEditMeta
+    ? (modalEntity?.updatedBy
+      ? `Last edited by ${modalEntity.updatedBy} · ${formatDate(modalEntity.updatedAt)}`
+      : `Last edited ${formatDate(modalEntity.updatedAt)}`)
+    : "";
 
   return html`
     <div className="modal-backdrop" role="presentation" onClick=${onCloseAll}>
@@ -206,9 +215,11 @@ export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit
         >
           ${body}
           <div className="form-footer">
-            <button className="button button-ghost" type="button" onClick=${onClose}>${stackDepth > 1 ? "← Back" : "Cancel"}</button>
-            <button className="button button-solid" type="submit">Save</button>
+            ${showEditMeta ? html`<div className="form-meta">${editMetaText}</div>` : null}
+            <button className="button button-ghost" type="button" disabled=${submitting} onClick=${onClose}>${stackDepth > 1 ? "← Back" : "Cancel"}</button>
+            <button className=${`button button-solid${submitting ? " button--loading" : ""}`} type="submit" disabled=${submitting}>${submitting ? "Saving" : "Save"}</button>
           </div>
+          ${submitError ? html`<div className="form-error" role="alert">${submitError}</div>` : null}
         </form>
       </div>
     </div>

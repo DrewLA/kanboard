@@ -209,6 +209,7 @@ export interface BoardBrief {
   implementationNotes: string;
   currentFocus: string;
   updatedAt: string;
+  updatedBy?: string;
 }
 
 export type BoardMetadata = BoardBrief;
@@ -223,6 +224,7 @@ export interface BaseEntity {
   comments: NodeComment[];
   createdAt: string;
   updatedAt: string;
+  updatedBy?: string;
 }
 
 export interface Epic extends BaseEntity {

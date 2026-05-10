@@ -1,81 +1,107 @@
 # Kanban Taskboard
 
-A trusted-local taskboard for tracking software delivery from epic down to task. Each user runs their own local backend; team mode coordinates through a shared DB connection string.
+A local-only kanboard for tracking software delivery from epic down to task. Each team member runs their own local backend; team mode coordinates through a shared remote DB connection string — there is no central server.
 
-The board keeps one shared source of truth for:
+The board maintains one shared source of truth for:
 
-- the BoardBrief, which defines the overall product objective and scope
-- the agile hierarchy: epic -> feature -> user story -> task
-- links between features and tasks
+- the **BoardBrief**: board name, product objective, scope, non-goals, success criteria, and current focus
+- the agile hierarchy: **epic → feature → user story → task**
+- links between features and tasks (blocks / relates-to)
 - node comments for agent coordination
 - shared CRUD logic reused by the REST API, browser UI, and MCP endpoint
 
+## Modes
+
+| Mode | Storage authority | Team coordination |
+|---|---|---|
+| `private` | Local JSON state | No |
+| `private-backup` | Local JSON state | DB used as hourly backup |
+| `team` | Shared remote DB | Yes — every member syncs through the same DB prefix |
+
+**Team mode makes every registered user an admin.** There is no per-user permission tiering; the shared DB connection string is the access boundary.
+
+State is versioned by row. Every mutation reads the current row version, applies changes, and increments the version. Conflicts are detected atomically and returned as `409` with full recovery guidance.
+
 ## Runtime model
 
-This project runs as one localhost-only Fastify process per user.
+One `127.0.0.1`-bound Fastify process per user.
 
-- the browser UI is served from `http://127.0.0.1:8787`
-- the REST API is served under `/api/*`
-- the MCP endpoint is served at `POST /mcp`
-- team mode uses a remote DB as the shared authority; there is no central app server
+- UI served at `http://127.0.0.1:8787`
+- REST API at `/api/*`
+- MCP endpoint at `POST /mcp`
 
-## What is included
+> **Security notice**: This project does not implement production security controls (authentication, authorization, rate limiting, or internet-facing hardening). It is designed for trusted local use only. Never expose this service to the public internet.
 
-- local HTTP UI
-- local JSON API
-- localhost HTTP MCP endpoint
-- full CRUD for BoardBrief, epics, features, stories, tasks, comments, and links
-- modular table-shaped local state package
-- generic remote DB string support, with Upstash Redis as the first adapter
-- EVM address user IDs and EIP-712 signed team mutations
-- Makefile commands for local development
+## First-run setup
 
-## Local-only design
-
-The server binds to `127.0.0.1` by default and is intended for private local use only.
-
-> WARNING
-> This project does not implement production security controls (for example: authentication, authorization, multi-tenant isolation, rate limiting, or internet-facing hardening).
-> It is designed only for trusted local development on localhost.
-> Never expose this service to the public internet.
-
-- do not expose it publicly
-- do not reverse-proxy it to the internet
-- keep MCP clients pointed at localhost only
-
-## Setup
-
-1. Copy `.env.example` to `.env`.
-2. Choose a mode.
-3. Install dependencies.
-4. Start the server.
-
-Modes:
-
-- `private`: local state package is authoritative
-- `private-backup`: local state package is authoritative; changed state is backed up hourly to the remote DB prefix
-- `team`: remote DB is authoritative; local state package mirrors reads and writes
-
-For team mode, generate an EVM key and register its address in the team `users` table. See `docs/internal-tools.md`.
+### 1. Install dependencies
 
 ```bash
 make install
+```
+
+### 2. Configure environment
+
+Copy `.env.example` to `.env` and set values:
+
+```bash
+cp .env.example .env
+```
+
+Minimum for **private mode** (no DB required):
+
+```ini
+TASKBOARD_MODE=private
+```
+
+For **team mode**, also set:
+
+```ini
+TASKBOARD_MODE=team
+TASKBOARD_DB_STRING=upstash;url=https://...;token=...;prefix=kanboard:main
+```
+
+The DB prefix scopes all keys in the shared database. Change it to create a separate board in the same DB instance.
+
+### 3. Set up your identity
+
+```bash
+npm run identity:onboard
+```
+
+This interactive script:
+
+1. Shows an intro banner with the detected mode
+2. Pings the DB if configured, reports if this is a first-time team setup (no `users` table yet)
+3. Prompts for your name, role, and optional email
+4. Generates a new EVM identity — shows the seed phrase once (write it down)
+5. Prompts you to set and confirm an identity password
+6. Writes the encrypted identity to `.kanboard/identity.json`
+7. Writes your profile to `.kanboard/user.json`
+8. Registers you in the team DB (if configured) — creates the `users` table if it does not exist
+9. Prints your address, name, and role, then tells you to run `make dev` and open the board URL
+
+For subsequent team members: each member runs `npm run identity:onboard` on their own machine. The script registers them in the same shared DB automatically.
+
+### 4. Start the server
+
+```bash
 make dev
 ```
 
-Open `http://127.0.0.1:8787`.
+Then open `http://127.0.0.1:8787` in your browser and log in with the identity password you set.
 
 ## Environment variables
 
-```bash
-TASKBOARD_MODE=private
-TASKBOARD_STATE_DIR=.kanboard/state
+```ini
+TASKBOARD_MODE=private                       # private | private-backup | team
+TASKBOARD_STATE_DIR=.kanboard/state          # local JSON state directory
 TASKBOARD_IDENTITY_FILE=.kanboard/identity.json
 TASKBOARD_USER_FILE=.kanboard/user.json
-TASKBOARD_PRIVATE_USERNAME=Private User
+TASKBOARD_PRIVATE_USERNAME=Private User      # display name for private mode (no identity)
 TASKBOARD_DB_STRING=upstash;url=...;token=...;prefix=kanboard:main
-TASKBOARD_EVM_PRIVATE_KEY=...
-TASKBOARD_BACKUP_INTERVAL_MINUTES=60
+TASKBOARD_EVM_PRIVATE_KEY=...               # alternative to identity file (team mode)
+TASKBOARD_BACKUP_INTERVAL_MINUTES=60         # for private-backup mode
 TASKBOARD_HOST=127.0.0.1
 TASKBOARD_PORT=8787
 ```
@@ -83,73 +109,54 @@ TASKBOARD_PORT=8787
 ## Commands
 
 ```bash
-make install   # npm install
-make build     # compile TypeScript to dist/
-make dev       # run the localhost HTTP server with tsx watch
-make start     # run the compiled HTTP server from dist/
-make local     # run the localhost HTTP server in private mode
-make mcp       # run the stdio MCP server (shares the same core tools)
-make mcp-local # run the stdio MCP server in private mode
-make start     # run the compiled server
-make check     # typecheck and build
-npm run identity:onboard  # create encrypted local identity file
-npm run team:init         # initialize a team DB package
-npm run team:add-user     # add a team user
-make migrate-up   # migrate data from local JSON to Upstash Redis
-make migrate-down # migrate data from Upstash Redis to local JSON
+make install              # npm install
+make build                # compile TypeScript to dist/
+make dev                  # start localhost server with tsx watch (hot reload)
+make start                # run compiled server from dist/
+make local                # run server in private mode (ignores mode env var)
+make check                # typecheck + build
+
+npm run identity:onboard  # interactive first-run setup (identity + DB registration)
+npm run team:init         # initialize a new team DB package + register first user
+npm run team:add-user     # add an existing address to the team users table
+npm run identity:whoami   # print current local identity address
+
+make migrate-up           # migrate local JSON state to Upstash Redis
+make migrate-down         # migrate Upstash Redis back to local JSON
 ```
 
 ## HTTP API
 
-Health:
+Health and users:
 
 - `GET /api/health`
 - `GET /api/users`
 - `GET /api/users/me`
+- `POST /api/identity/unlock`
 
 Board and brief:
 
 - `GET /api/taskboard`
-- `GET /api/board-brief`
-- `PUT /api/board-brief`
-- `GET /api/metadata`
-- `PUT /api/metadata`
+- `GET /api/board-brief` / `PUT /api/board-brief`
+- `GET /api/metadata` / `PUT /api/metadata` (alias)
 
 Hierarchy:
 
-- `GET|POST /api/epics`
-- `GET|PATCH|DELETE /api/epics/:epicId`
-- `GET|POST /api/features`
-- `GET|PATCH|DELETE /api/features/:featureId`
-- `GET|POST /api/stories`
-- `GET|PATCH|DELETE /api/stories/:storyId`
-- `GET|POST /api/tasks`
-- `GET|PATCH|DELETE /api/tasks/:taskId`
+- `GET|POST /api/epics` — `GET|PATCH|DELETE /api/epics/:epicId`
+- `GET|POST /api/features` — `GET|PATCH|DELETE /api/features/:featureId`
+- `GET|POST /api/stories` — `GET|PATCH|DELETE /api/stories/:storyId`
+- `GET|POST /api/tasks` — `GET|PATCH|DELETE /api/tasks/:taskId`
 
 Coordination:
 
-- `POST /api/comments`
-- `GET|PATCH|DELETE /api/comments/:commentId`
-- `GET|POST /api/links`
-- `GET|PATCH|DELETE /api/links/:linkId`
+- `POST /api/comments` — `GET|PATCH|DELETE /api/comments/:commentId`
+- `GET|POST /api/links` — `GET|PATCH|DELETE /api/links/:linkId`
 - `GET /api/nodes/resolve`
 - `GET /api/nodes/search`
 
 ## MCP endpoint
 
-The same server also exposes MCP over localhost HTTP at `POST /mcp`.
-
-Start it with either:
-
-```bash
-make dev
-```
-
-or:
-
-```bash
-make local
-```
+The same server exposes MCP over localhost HTTP at `POST /mcp`.
 
 Point your MCP client at:
 
@@ -157,60 +164,44 @@ Point your MCP client at:
 http://127.0.0.1:8787/mcp
 ```
 
-Available tools include:
+Available tools: `get_taskboard`, `get_board_brief`, `update_board_brief`, `list_epics`, `get_epic`, `create_epic`, `update_epic`, `delete_epic`, `list_features`, `get_feature`, `create_feature`, `update_feature`, `delete_feature`, `list_user_stories`, `get_user_story`, `create_user_story`, `update_user_story`, `delete_user_story`, `list_tasks`, `get_task`, `create_task`, `update_task`, `delete_task`, `resolve_node`, `find_nodes`, `create_comment`, `get_comment`, `update_comment`, `delete_comment`, `list_links`, `get_link`, `create_link`, `update_link`, `delete_link`.
 
-- `get_taskboard`, `get_board_brief`, `update_board_brief`
-- `get_metadata`, `update_metadata`
-- `list_epics`, `get_epic`, `create_epic`, `update_epic`, `delete_epic`
-- `list_features`, `get_feature`, `create_feature`, `update_feature`, `delete_feature`
-- `list_user_stories`, `get_user_story`, `create_user_story`, `update_user_story`, `delete_user_story`
-- `list_tasks`, `get_task`, `create_task`, `update_task`, `delete_task`
-- `resolve_node`, `find_nodes`
-- `create_comment`, `get_comment`, `update_comment`, `delete_comment`
-- `list_links`, `get_link`, `create_link`, `update_link`, `delete_link`
+See `docs/agent-skill-prompt.md` for the agent operating prompt.
 
 ## Persistence
 
-Live state is modular, not one board document. The local state package stores one JSON file per table under `TASKBOARD_STATE_DIR`:
+Local state is one JSON file per table under `TASKBOARD_STATE_DIR`:
 
-- `users.json`
-- `boardBrief.json`
-- `epics.json`
-- `features.json`
-- `userStories.json`
-- `tasks.json`
-- `comments.json`
-- `links.json`
-- `indexes.json`
-- `metadata.json`
+- `users.json`, `boardBrief.json`, `epics.json`, `features.json`, `userStories.json`
+- `tasks.json`, `comments.json`, `links.json`, `indexes.json`, `metadata.json`
 
-Each row carries its own version. Mutations compare the preread row versions against current row versions and fail with a conflict when an affected task, story, feature, epic, comment, link, or index changed first.
+Each row carries its own version number. Mutations read the current version, apply changes, increment, and write back. Conflicting concurrent writes return a `409` with the conflicting revisions and recovery steps.
 
-In team mode, the remote DB adapter performs the version checks atomically. The local state package mirrors the shared DB after reads and successful writes.
+In team mode the remote DB adapter performs version checks atomically. The local state package mirrors the shared DB after each read and successful write.
 
 ## Project structure
 
 ```text
-public/                  Static UI
-src/config.ts            Environment parsing
-src/model.ts             Types, schemas, and snapshot mapping
-src/repository.ts        Modular local and remote persistence
-src/state-package.ts     Table-shaped state package mapping
-src/identity.ts          EVM identity and EIP-712 mutation signing
-src/taskboard-service.ts Shared CRUD logic and mutation rules
-src/http-server.ts       Local Fastify server for UI, API, and HTTP MCP
+public/                  Browser UI (React + htm, no build step)
+src/config.ts            Environment parsing and validation
+src/model.ts             Types, Zod schemas, and board snapshot mapping
+src/repository.ts        Modular local and remote persistence layer
+src/state-package.ts     Table-shaped state document with version tracking
+src/identity.ts          EVM identity derivation and EIP-712 signing
+src/identity-store.ts    Encrypted identity file read/write
+src/taskboard-service.ts All board mutations — single source of truth
+src/http-server.ts       Fastify server (UI, REST API, HTTP MCP)
 src/mcp-core.ts          Shared MCP tool definitions and handlers
-src/mcp-server.ts        Optional stdio wrapper around the same MCP core
+src/mcp-server.ts        Optional stdio MCP wrapper
+src/startup-errors.ts    Startup and conflict error formatting
+src/scripts/             CLI tools (onboarding, team admin, migration)
 docs/architecture.md     Design notes
-docs/internal-tools.md   EVM identity and team admin tools
+docs/internal-tools.md   EVM identity and team admin reference
 docs/agent-skill-prompt.md Agent operating prompt
 ```
 
-## Agent guidance
+## TODO:
 
-Use `docs/agent-skill-prompt.md` when you want an external agent to operate on the board consistently.
-
-## TODOs
-
-- improve token efficiency
-- optimize multi-agent chat with a relay instead of static node comments
+- Add tests
+- Improve token efficiency
+- Add dedicated agents relay

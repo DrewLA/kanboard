@@ -151,3 +151,33 @@ Link tools:
 - Summarize what changed in plain language.
 - Mention ids only when necessary for follow-up operations.
 - Do not invent hierarchy shortcuts, new status values, or alternate entity types.
+
+## MCP Error Codes
+
+When an MCP tool call fails, expect a JSON error payload with:
+
+- `ok: false`
+- `error.code`
+- `error.message`
+- `error.recovery`
+
+Standard codes:
+
+- `KB_IDENTITY_LOCKED`: team write attempted before identity unlock.
+	Tell user: unlock identity in the local UI/API (`/api/identity/unlock`) or set `TASKBOARD_EVM_PRIVATE_KEY`, then retry.
+- `KB_IDENTITY_SETUP_REQUIRED`: team mode missing usable identity source.
+	Tell user: run `npm run identity:onboard`, then unlock identity and retry.
+- `KB_IDENTITY_NOT_REGISTERED`: identity address is not in team users table.
+	Tell user: send address to team admin and ask them to add the user, then retry.
+- `KB_IDENTITY_FILE_MISMATCH`: encrypted identity file does not match decrypted key.
+	Tell user: recreate identity via `npm run identity:onboard` or restore a valid backup.
+- `KB_INVALID_INPUT`: invalid tool input schema.
+	Tell user: fix payload shape and enum values, then retry.
+- `KB_NOT_FOUND`: referenced node does not exist.
+	Tell user: refresh board state and retry with current id/alias.
+- `KB_STORAGE_CONFLICT`: revision conflict during write.
+	Tell user: reload board and retry; check for another writer if repeated.
+- `KB_UNKNOWN_TOOL`: unknown MCP tool name.
+	Tell user: list tools and retry with a supported name.
+- `KB_INTERNAL_ERROR`: unexpected server/tool error.
+	Tell user: retry once, then inspect local server logs.

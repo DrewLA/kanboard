@@ -3,7 +3,7 @@ import path from "node:path";
 import fastifyStatic from "@fastify/static";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import Fastify, { FastifyInstance } from "fastify";
-import { ZodError } from "zod";
+import { z, ZodError } from "zod";
 
 import { AppConfig, assertStorageConfig, getAppConfig } from "./config";
 import {
@@ -68,6 +68,10 @@ function parseBody<T>(schema: { parse: (value: unknown) => T }, body: unknown): 
   return schema.parse(body);
 }
 
+const unlockIdentityInputSchema = z.object({
+  password: z.string().min(1, "Password is required.")
+});
+
 let startupConfig: AppConfig | undefined;
 
 async function buildServer(config: AppConfig): Promise<FastifyInstance> {
@@ -117,8 +121,16 @@ async function buildServer(config: AppConfig): Promise<FastifyInstance> {
     dbConfigured: Boolean(config.dbString),
     dbKey: config.mode === "team" || config.mode === "private-backup" ? config.redisKey : undefined,
     host: config.host,
-    port: config.port
+    port: config.port,
+    identity: await repository.getIdentityStatus?.()
   }));
+
+  app.post("/api/identity/unlock", async (request) => {
+    const payload = parseBody(unlockIdentityInputSchema, request.body);
+    const identity = await repository.unlockIdentity?.(payload.password);
+    const currentUser = await repository.getCurrentUser?.();
+    return { identity, currentUser };
+  });
 
   app.get("/api/users", async () => repository.listUsers?.() ?? []);
   app.get("/api/users/me", async () => repository.getCurrentUser?.() ?? null);

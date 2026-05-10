@@ -4,7 +4,29 @@ import { viewLabels, runStateLabel, runStateTitle } from "./utils.js";
 
 const html = htm.bind(React.createElement);
 
-export function Header({ productName, health, activeView, onViewChange, onRefresh, onToggleAgents, agentsOpen }) {
+function userInitials(name) {
+  if (!name) return "?";
+  const parts = name.trim().split(/\s+/);
+  if (parts.length === 1) return parts[0][0].toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+function UserChip({ user }) {
+  if (!user) return null;
+  const initials = user.avatarIcon || userInitials(user.name);
+  const color = user.avatarColor || "var(--accent)";
+  return html`
+    <div className="user-chip" title=${`${user.name} · ${user.role}`}>
+      <span className="user-avatar" style=${{ background: color }}>${initials}</span>
+      <span className="user-chip-info">
+        <span className="user-chip-name">${user.name}</span>
+        <span className="user-chip-role">${user.role}</span>
+      </span>
+    </div>
+  `;
+}
+
+export function Header({ productName, health, activeView, onViewChange, onRefresh, onToggleAgents, agentsOpen, currentUser }) {
   return html`
     <header className="topbar glass-panel">
       <div className="brand-cluster">
@@ -25,6 +47,7 @@ export function Header({ productName, health, activeView, onViewChange, onRefres
         )}
       </nav>
       <div className="status-cluster">
+        <${UserChip} user=${currentUser} />
         <button className="button button-ghost btn-icon" onClick=${onRefresh} aria-label="Refresh" title="Refresh">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
             <path d="M12.5 7A5.5 5.5 0 1 1 9.4 2.1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>

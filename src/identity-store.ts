@@ -1,4 +1,5 @@
 import { randomBytes, scrypt as scryptCallback, createCipheriv, createDecipheriv } from "node:crypto";
+import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -45,68 +46,74 @@ export async function fileExists(filePath: string): Promise<boolean> {
   }
 }
 
-function requireTty(): void {
-  if (!process.stdin.isTTY || !process.stderr.isTTY) {
-    throw new Error("Interactive password prompt requires a TTY.");
+type PromptTerminal = {
+  input: NodeJS.ReadableStream;
+  output: NodeJS.WritableStream;
+  close: () => void;
+};
+
+function openPromptTerminal(): PromptTerminal {
+  try {
+    const input = createReadStream("/dev/tty");
+    const output = createWriteStream("/dev/tty");
+
+    return {
+      input,
+      output,
+      close: () => {
+        input.close();
+        output.end();
+      }
+    };
+  } catch {
+    if (!process.stdin.isTTY || !process.stderr.isTTY) {
+      throw new Error("Interactive prompts require a TTY.");
+    }
+
+    return {
+      input: process.stdin,
+      output: process.stderr,
+      close: () => {}
+    };
   }
 }
 
 export async function promptHidden(label: string): Promise<string> {
-  requireTty();
+  const terminal = openPromptTerminal();
 
-  return new Promise((resolve, reject) => {
-    const stdin = process.stdin;
-    const stderr = process.stderr;
-    let value = "";
-
-    stderr.write(label);
-    stdin.setRawMode(true);
-    stdin.resume();
-
-    const cleanup = (): void => {
-      stdin.setRawMode(false);
-      stdin.pause();
-      stdin.off("data", onData);
-      stderr.write("\n");
-    };
-
-    const onData = (chunk: Buffer): void => {
-      const input = chunk.toString("utf8");
-
-      if (input === "\u0003") {
-        cleanup();
-        reject(new Error("Password prompt cancelled."));
-        return;
-      }
-
-      if (input === "\r" || input === "\n") {
-        cleanup();
-        resolve(value);
-        return;
-      }
-
-      if (input === "\u007f") {
-        value = value.slice(0, -1);
-        return;
-      }
-
-      value += input;
-    };
-
-    stdin.on("data", onData);
+  const rl = createInterface({
+    input: terminal.input,
+    output: terminal.output,
+    terminal: true
   });
+
+  // Write the label ourselves before suppressing all subsequent echo
+  terminal.output.write(label);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (rl as any)._writeToOutput = (): void => {};
+
+  try {
+    return await rl.question("");
+  } finally {
+    rl.close();
+    terminal.output.write("\n");
+    terminal.close();
+  }
 }
 
 export async function promptLine(label: string): Promise<string> {
+  const terminal = openPromptTerminal();
   const rl = createInterface({
-    input: process.stdin,
-    output: process.stderr
+    input: terminal.input,
+    output: terminal.output,
+    terminal: true
   });
 
   try {
     return await rl.question(label);
   } finally {
     rl.close();
+    terminal.close();
   }
 }
 

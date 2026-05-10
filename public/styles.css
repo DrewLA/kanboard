@@ -1,3 +1,33 @@
+/* Skeleton loading styles */
+.skeleton {
+  position: relative;
+  background: #1a2336;
+  overflow: hidden;
+  border-radius: 8px;
+  opacity: 0.82;
+}
+.skeleton-bar {
+  min-height: 18px;
+  background: linear-gradient(90deg, #1a2336 25%, #232e48 50%, #1a2336 75%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.2s linear infinite;
+}
+.skeleton-card {
+  min-height: 38px;
+  background: linear-gradient(90deg, #1a2336 25%, #232e48 50%, #1a2336 75%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.2s linear infinite;
+}
+.skeleton-block {
+  min-height: 120px;
+  background: linear-gradient(90deg, #1a2336 25%, #232e48 50%, #1a2336 75%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.2s linear infinite;
+}
+@keyframes skeleton-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
 @import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap");
 
 :root {
@@ -151,6 +181,68 @@ body {
   gap: 8px;
 }
 
+.user-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 10px 3px 3px;
+  background: rgba(255, 255, 255, 0.04);
+  max-width: 180px;
+  overflow: hidden;
+  cursor: default;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+
+.user-chip:hover {
+  border-color: var(--line-strong);
+  background: rgba(8, 22, 54, 0.68);
+}
+
+.user-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: #020e24;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.user-chip-info {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.user-chip-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
+}
+
+.user-chip-role {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: capitalize;
+  line-height: 1.2;
+  letter-spacing: 0.02em;
+}
+
 .run-state {
   align-self: flex-start;
   border-radius: 999px;
@@ -173,6 +265,7 @@ body {
   padding: 7px 14px;
   cursor: pointer;
   line-height: 1;
+  position: relative;
   transition: border-color 140ms ease, color 140ms ease, background 140ms ease, transform 140ms ease;
 }
 
@@ -218,6 +311,48 @@ body {
   color: #ffd2d4;
   border-color: rgba(248, 113, 113, 0.44);
   background: rgba(80, 20, 28, 0.60);
+}
+
+.button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+  pointer-events: none;
+}
+
+.button--loading {
+  pointer-events: none;
+  opacity: 0.82;
+  padding-right: 30px;
+}
+
+.button--loading::after {
+  content: "";
+  position: absolute;
+  right: 11px;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  margin-top: -5px;
+  border: 1.8px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: btn-spin 0.65s linear infinite;
+}
+
+.button--loading.btn-sm {
+  padding-right: 26px;
+}
+
+.button--loading.btn-sm::after {
+  width: 8px;
+  height: 8px;
+  margin-top: -4px;
+  right: 9px;
+}
+
+@keyframes btn-spin {
+  to { transform: rotate(360deg); }
 }
 
 .view-shell {
@@ -661,6 +796,91 @@ select:focus {
   width: min(360px, 100%);
 }
 
+.unlock-shell {
+  width: min(420px, 100%);
+}
+
+.unlock-copy {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.unlock-address {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.03);
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.unlock-error {
+  border: 1px solid rgba(248, 113, 113, 0.4);
+  border-radius: var(--radius-sm);
+  background: rgba(80, 20, 28, 0.45);
+  color: #ffd2d4;
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 8px 10px;
+}
+
+.flash-error {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid rgba(248, 113, 113, 0.45);
+  border-radius: var(--radius-md);
+  background: rgba(55, 10, 18, 0.92);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  color: #ffd2d4;
+  font-size: 13px;
+  line-height: 1.45;
+  max-width: min(520px, calc(100vw - 32px));
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.45);
+  animation: in-rise 0.18s ease;
+}
+
+.flash-error-text {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+
+.flash-error-close {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: #ffd2d4;
+  cursor: pointer;
+  font-size: 14px;
+  opacity: 0.7;
+  padding: 0 2px;
+  line-height: 1;
+}
+
+.flash-error-close:hover {
+  opacity: 1;
+}
+
+.form-error {
+  border: 1px solid rgba(248, 113, 113, 0.4);
+  border-radius: var(--radius-sm);
+  background: rgba(80, 20, 28, 0.45);
+  color: #ffd2d4;
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 7px 10px;
+  margin-top: 2px;
+}
+
 .confirm-message {
   margin: 0 0 16px;
   color: var(--text);
@@ -710,8 +930,17 @@ select:focus {
 .form-footer {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
   gap: 8px;
   margin-top: 6px;
+}
+
+.form-meta {
+  margin-right: auto;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: break-word;
 }
 
 .inline-note {
@@ -1209,4 +1438,21 @@ label .cselect-trigger {
     margin-left: 0;
     opacity: 1 !important;
   }
+}
+
+.unlock-success {
+  color: var(--done);
+  margin-top: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  animation: unlock-fadein 0.3s ease;
+}
+
+@keyframes unlock-fadein {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
 }
