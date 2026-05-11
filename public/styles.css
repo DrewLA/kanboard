@@ -1030,6 +1030,69 @@ select:focus {
   overflow: hidden;
 }
 
+.card-sep {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(138, 165, 196, 0.18), transparent);
+  margin: 6px 0 0;
+}
+
+.card-assignee-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 5px;
+  min-width: 0;
+}
+
+.card-assignee-label {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  opacity: 0.45;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.user-card-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  border: 1px solid rgba(138, 165, 196, 0.16);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.022);
+  padding: 2px 8px 2px 3px;
+  overflow: hidden;
+}
+
+.user-card-chip-avatar {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  font-weight: 700;
+  color: #fff;
+  flex-shrink: 0;
+  line-height: 1;
+  overflow: hidden;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.user-card-chip-name {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* In modal footer, push to the left */
 .form-footer .meta-chip {
   margin-right: auto;

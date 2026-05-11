@@ -33,6 +33,10 @@ const baseCreateSchema = z.object({
 });
 
 const baseUpdateSchema = baseCreateSchema.partial();
+const assigneeSchema = z.preprocess(
+  (value) => value === null || value === "" ? undefined : value,
+  z.string().max(120).optional()
+);
 
 export const boardBriefPatchSchema = z.object({
   productName: z.string().min(1).max(120).optional(),
@@ -79,7 +83,8 @@ export const createTaskInputSchema = baseCreateSchema.extend({
   storyAlias: aliasInputSchema.optional(),
   implementationNotes: z.string().max(4000).default(""),
   estimate: z.string().max(120).default(""),
-  tags: z.array(z.string().max(40)).default([])
+  tags: z.array(z.string().max(40)).default([]),
+  assignedTo: assigneeSchema
 }).refine((value) => value.storyId || value.storyAlias, {
   message: "Provide storyId or storyAlias.",
   path: ["storyId"]
@@ -87,7 +92,8 @@ export const createTaskInputSchema = baseCreateSchema.extend({
 export const updateTaskInputSchema = baseUpdateSchema.extend({
   implementationNotes: z.string().max(4000).optional(),
   estimate: z.string().max(120).optional(),
-  tags: z.array(z.string().max(40)).optional()
+  tags: z.array(z.string().max(40)).optional(),
+  assignedTo: assigneeSchema
 });
 
 export const resolveNodeInputSchema = z.object({
@@ -223,6 +229,7 @@ export interface BaseEntity {
   status: WorkStatus;
   priority: Priority;
   comments: NodeComment[];
+  author?: string;
   createdAt: string;
   updatedAt: string;
   updatedBy?: string;
@@ -249,6 +256,7 @@ export interface Task extends BaseEntity {
   implementationNotes: string;
   estimate: string;
   tags: string[];
+  assignedTo?: string;
 }
 
 export interface WorkLink {

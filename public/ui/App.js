@@ -348,6 +348,7 @@ export function App() {
             implementationNotes: formData.get("implementationNotes")?.trim() || "",
             estimate: formData.get("estimate")?.trim() || "",
             tags: parseCommaList(formData.get("tags") || ""),
+            assignedTo: formData.get("assignedTo") || null,
             status: formData.get("status"),
             priority: formData.get("priority")
           })});
@@ -359,6 +360,7 @@ export function App() {
             implementationNotes: formData.get("implementationNotes")?.trim() || "",
             estimate: formData.get("estimate")?.trim() || "",
             tags: parseCommaList(formData.get("tags") || ""),
+            assignedTo: formData.get("assignedTo") || null,
             status: formData.get("status"),
             priority: formData.get("priority")
           })});

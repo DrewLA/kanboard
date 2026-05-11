@@ -438,10 +438,11 @@ function touchEntity(entity: { updatedAt: string }, timestamp: string): void {
   entity.updatedAt = timestamp;
 }
 
-function touchEditableEntity(entity: { updatedAt: string; updatedBy?: string; updatedVia?: "mcp" | "api" }, timestamp: string): void {
+function touchEditableEntity(entity: { updatedAt: string; updatedBy?: string; updatedVia?: "mcp" | "api"; author?: string }, timestamp: string): void {
   touchEntity(entity, timestamp);
 
   if (activeMutationEditor) {
+    entity.author = entity.author || activeMutationEditor;
     entity.updatedBy = activeMutationEditor;
   }
   entity.updatedVia = activeMutationSource ?? "api";
@@ -952,6 +953,7 @@ export async function createEpic(
       priority: input.priority,
       comments: [],
       featureIds: [],
+      author: activeMutationEditor,
       createdAt: timestamp,
       updatedAt: timestamp,
       updatedBy: activeMutationEditor,
@@ -1042,6 +1044,7 @@ export async function createFeature(
       priority: input.priority,
       comments: [],
       storyIds: [],
+      author: activeMutationEditor,
       createdAt: timestamp,
       updatedAt: timestamp,
       updatedBy: activeMutationEditor,
@@ -1135,6 +1138,7 @@ export async function createUserStory(
       comments: [],
       acceptanceCriteria: input.acceptanceCriteria,
       taskIds: [],
+      author: activeMutationEditor,
       createdAt: timestamp,
       updatedAt: timestamp,
       updatedBy: activeMutationEditor,
@@ -1229,6 +1233,8 @@ export async function createTask(
       implementationNotes: input.implementationNotes,
       estimate: input.estimate,
       tags: input.tags,
+      assignedTo: input.assignedTo,
+      author: activeMutationEditor,
       createdAt: timestamp,
       updatedAt: timestamp,
       updatedBy: activeMutationEditor,

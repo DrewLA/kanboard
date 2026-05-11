@@ -6,10 +6,13 @@ import { MetaChip } from "./BoardView.js";
 
 const html = htm.bind(React.createElement);
 
-function buildModalBody(modal, taskboard, activeFilters, lookup, onSwitchModal) {
+function buildModalBody(modal, taskboard, activeFilters, lookup, onSwitchModal, usersMap) {
   const epics = taskboard?.epics || [];
   const allFeatures = epics.flatMap((epic) => epic.features);
   const allStories = allFeatures.flatMap((feature) => feature.userStories);
+  const userOptions = Object.values(usersMap || {})
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .map((user) => ({ value: user.id, label: user.name }));
 
   if (modal.type === "board-brief") {
     const b = modal.entity || {};
@@ -136,6 +139,14 @@ function buildModalBody(modal, taskboard, activeFilters, lookup, onSwitchModal) 
         <label>Estimate<input name="estimate" defaultValue=${sv.estimate ?? t.estimate ?? ""} /></label>
         <label>Tags (comma-separated)<input name="tags" defaultValue=${sv.tags ?? (t.tags || []).join(", ")} /></label>
       </div>
+      <label>Assigned to
+        <${CustomSelect}
+          name="assignedTo"
+          defaultValue=${sv.assignedTo ?? t.assignedTo ?? ""}
+          options=${[{ value: "", label: "Unassigned" }, ...userOptions]}
+          placeholder="Unassigned"
+        />
+      </label>
       <div className="form-row">
         <label>Status
           <select name="status" defaultValue=${sv.status || t.status || "pending"}>
@@ -187,7 +198,7 @@ export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit
     onSwitchModal(type, title, null, parentId);
   }
 
-  const body = buildModalBody(modal, taskboard, activeFilters, lookup, handleSwitchModal);
+  const body = buildModalBody(modal, taskboard, activeFilters, lookup, handleSwitchModal, usersMap);
   const modalEntity = modal.entity || null;
   const showEditMeta = Boolean(
     modalEntity?.updatedAt &&

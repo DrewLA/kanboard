@@ -29,6 +29,18 @@ function MetaChip({ updatedBy, updatedAt, updatedVia, usersMap }) {
   `;
 }
 
+function UserCardChip({ user }) {
+  if (!user) return null;
+
+  const initials = user.name?.[0]?.toUpperCase() || "?";
+  return html`
+    <div className="user-card-chip" title=${`Assigned to ${user.name}${user.role ? " · " + user.role : ""}`}>
+      <span className="user-card-chip-avatar" style=${{ background: user.avatarColor || "var(--accent)" }}>${initials}</span>
+      <span className="user-card-chip-name">${user.name}</span>
+    </div>
+  `;
+}
+
 export { MetaChip };
 
 export function BoardView({ taskboard, filters, onFilterChange, onAddTask, onTaskClick, onMoveTask, onAddEpic, onAddFeature, usersMap }) {
@@ -117,6 +129,13 @@ export function BoardView({ taskboard, filters, onFilterChange, onAddTask, onTas
                               </div>
                               ${(task.updatedBy || task.updatedAt) ? html`
                                 <${MetaChip} updatedBy=${task.updatedBy} updatedAt=${task.updatedAt} updatedVia=${task.updatedVia} usersMap=${usersMap} />
+                              ` : null}
+                              ${task.assignedTo && usersMap?.[task.assignedTo] ? html`
+                                ${(task.updatedBy || task.updatedAt) ? html`<div className="card-sep"></div>` : null}
+                                <div className="card-assignee-row">
+                                  <span className="card-assignee-label">ASSIGNED</span>
+                                  <${UserCardChip} user=${usersMap[task.assignedTo]} />
+                                </div>
                               ` : null}
                             </article>
                           `)

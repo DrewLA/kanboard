@@ -397,7 +397,8 @@ export const toolDefinitions = [
         priority: { type: "string" },
         implementationNotes: { type: "string" },
         estimate: { type: "string" },
-        tags: { type: "array", items: { type: "string" } }
+        tags: { type: "array", items: { type: "string" } },
+        assignedTo: { type: "string" }
       },
       additionalProperties: false
     }
@@ -417,7 +418,8 @@ export const toolDefinitions = [
         priority: { type: "string" },
         implementationNotes: { type: "string" },
         estimate: { type: "string" },
-        tags: { type: "array", items: { type: "string" } }
+        tags: { type: "array", items: { type: "string" } },
+        assignedTo: { type: "string" }
       },
       additionalProperties: false
     }
