@@ -1,11 +1,37 @@
 import React, { useMemo } from "https://esm.sh/react@18.3.1";
 import htm from "https://esm.sh/htm@3.1.1";
-import { allowedStatuses, statusLabels, getTaskContexts, priorityClass } from "./utils.js";
+import { allowedStatuses, statusLabels, getTaskContexts, priorityClass, formatRelativeTime } from "./utils.js";
 import { CustomSelect } from "./CustomSelect.js";
 
 const html = htm.bind(React.createElement);
 
-export function BoardView({ taskboard, filters, onFilterChange, onAddTask, onTaskClick, onMoveTask, onAddEpic, onAddFeature }) {
+function userInitials(name) {
+  if (!name) return "?";
+  const parts = name.trim().split(/\s+/);
+  if (parts.length === 1) return parts[0][0].toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+function MetaChip({ updatedBy, updatedAt, updatedVia, usersMap }) {
+  if (!updatedBy && !updatedAt) return null;
+  const isAgent = updatedVia === "mcp";
+  const user = updatedBy ? usersMap?.[updatedBy] : null;
+  const color = isAgent ? "var(--accent-agent, #7c3aed)" : (user?.avatarColor || "var(--text-muted)");
+  const initials = user ? userInitials(user.name) : userInitials(updatedBy || "?");
+  const label = user?.name || (updatedBy ? updatedBy.slice(0, 6) + "…" : "unknown");
+  const time = formatRelativeTime(updatedAt);
+  return html`
+    <div className=${`meta-chip${isAgent ? " meta-chip--agent" : ""}`} title=${`Last edited by ${user?.name || updatedBy || "unknown"}${isAgent ? " (via agent)" : ""}${time ? " · " + time : ""}`}>
+      <span className="meta-chip-avatar" style=${{ background: color }}>${initials}</span>
+      <span className="meta-chip-name">${label}</span>
+      ${time ? html`<span className="meta-chip-time">${time}</span>` : null}
+    </div>
+  `;
+}
+
+export { MetaChip };
+
+export function BoardView({ taskboard, filters, onFilterChange, onAddTask, onTaskClick, onMoveTask, onAddEpic, onAddFeature, usersMap }) {
   const epics = taskboard?.epics || [];
   const allContexts = useMemo(() => getTaskContexts(taskboard), [taskboard]);
 
@@ -89,6 +115,9 @@ export function BoardView({ taskboard, filters, onFilterChange, onAddTask, onTas
                                   <span className=${`priority ${priorityClass(task.priority)}`}>${task.priority}</span>
                                 </div>
                               </div>
+                              ${(task.updatedBy || task.updatedAt) ? html`
+                                <${MetaChip} updatedBy=${task.updatedBy} updatedAt=${task.updatedAt} updatedVia=${task.updatedVia} usersMap=${usersMap} />
+                              ` : null}
                             </article>
                           `)
                         : html`<p className="empty-minor">No tasks</p>`}

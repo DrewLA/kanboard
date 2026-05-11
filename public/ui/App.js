@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "https://esm.sh/react@18.3.1";
+import React, { useEffect, useMemo, useRef, useState } from "https://esm.sh/react@18.3.1";
 import htm from "https://esm.sh/htm@3.1.1";
 import { request, getErrorMessage } from "./api.js";
 import { parseHashView, parseLineList, parseCommaList, getTaskContexts } from "./utils.js";
@@ -129,9 +129,32 @@ export function App() {
   const [unlocking, setUnlocking] = useState(false);
   const [unlockRefreshing, setUnlockRefreshing] = useState(false);
   const [currentUser, setCurrentUser] = useState(null);
+  const [users, setUsers] = useState([]);
   const [pendingOp, setPendingOp] = useState(false);
   const [flashError, setFlashError] = useState(null);
   const [modalError, setModalError] = useState(null);
+  const [agentCount, setAgentCount] = useState(0);
+  const [agents, setAgents] = useState({ sessions: [], counts: { connected: 0, recent: 0 } });
+  const [refreshing, setRefreshing] = useState(false);
+  const taskboardRef = useRef(null);
+  const reloadInFlightRef = useRef(null);
+
+  useEffect(() => {
+    taskboardRef.current = taskboard;
+  }, [taskboard]);
+
+  useEffect(() => {
+    if (!health?.ok) return;
+    const es = new EventSource("/api/agents/events");
+    const handle = (e) => {
+      const data = JSON.parse(e.data);
+      setAgents(data);
+      setAgentCount(data?.counts?.connected ?? 0);
+    };
+    es.addEventListener("agents-ready", handle);
+    es.addEventListener("agents-changed", handle);
+    return () => es.close();
+  }, [health?.ok]);
 
   useEffect(() => {
     if (!flashError) return;
@@ -139,8 +162,13 @@ export function App() {
     return () => clearTimeout(t);
   }, [flashError]);
 
+  const usersMap = useMemo(() => {
+    const m = {};
+    for (const u of users) if (u.id) m[u.id] = u;
+    return m;
+  }, [users]);
+
   const lookup = useMemo(() => {
-    const epics = taskboard?.epics || [];
     const allContexts = getTaskContexts(taskboard);
     return {
       findEpic: (id) => epics.find((e) => e.id === id) || null,
@@ -165,29 +193,68 @@ export function App() {
     };
   }, [taskboard]);
 
-  async function reload() {
-    const [nextHealth, nextTaskboard, nextUser] = await Promise.all([
-      request("/api/health"),
-      request("/api/taskboard"),
-      request("/api/users/me").catch(() => null)
-    ]);
-    setHealth(nextHealth);
-    setTaskboard(nextTaskboard);
-    setCurrentUser(nextUser);
-    setExpanded((prev) => {
-      if (prev.size) return prev;
-      const seed = new Set();
-      for (const epic of nextTaskboard.epics) {
-        seed.add(epic.id);
-        for (const feature of epic.features) seed.add(feature.id);
-      }
-      return seed;
-    });
+  async function reload(options = {}) {
+    if (reloadInFlightRef.current) return reloadInFlightRef.current;
+
+    const showSpinner = Boolean(options.showSpinner);
+    if (showSpinner) setRefreshing(true);
+
+    const run = (async () => {
+      const [nextHealth, nextTaskboard, nextUser, nextUsers] = await Promise.all([
+        request("/api/health"),
+        request("/api/taskboard"),
+        request("/api/users/me").catch(() => null),
+        request("/api/users").catch(() => [])
+      ]);
+      setHealth(nextHealth);
+      setTaskboard(nextTaskboard);
+      setCurrentUser(nextUser);
+      setUsers(nextUsers || []);
+      setExpanded((prev) => {
+        if (prev.size) return prev;
+        const seed = new Set();
+        for (const epic of nextTaskboard.epics) {
+          seed.add(epic.id);
+          for (const feature of epic.features) seed.add(feature.id);
+        }
+        return seed;
+      });
+    })();
+
+    reloadInFlightRef.current = run;
+
+    try {
+      await run;
+    } finally {
+      reloadInFlightRef.current = null;
+      if (showSpinner) setRefreshing(false);
+    }
   }
 
   useEffect(() => {
     reload().catch((err) => { setHealth(null); setFlashError(getErrorMessage(err)); });
   }, []);
+
+  useEffect(() => {
+    if (!health?.ok) return;
+
+    const events = new EventSource("/api/board-events");
+    const onBoardChanged = (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        const nextRevision = Number(payload?.revision);
+        const currentRevision = taskboardRef.current?.revision;
+        if (!Number.isFinite(nextRevision) || nextRevision === currentRevision) return;
+
+        reload({ showSpinner: true }).catch((err) => setFlashError(getErrorMessage(err)));
+      } catch (error) {
+        setFlashError(getErrorMessage(error));
+      }
+    };
+
+    events.addEventListener("board-changed", onBoardChanged);
+    return () => events.close();
+  }, [health?.ok]);
 
   useEffect(() => {
     const onHashChange = () => setActiveView(parseHashView());
@@ -475,7 +542,7 @@ export function App() {
     }
   }
 
-  const refreshSafe = () => reload().catch((err) => setFlashError(getErrorMessage(err)));
+  const refreshSafe = () => reload({ showSpinner: true }).catch((err) => setFlashError(getErrorMessage(err)));
   const boardBrief = taskboard?.boardBrief || {};
   const showLoadingShell = !taskboard || unlockRefreshing;
 
@@ -490,8 +557,10 @@ export function App() {
           activeView=${activeView}
           onViewChange=${navigateTo}
           onRefresh=${refreshSafe}
+          refreshing=${refreshing}
           onToggleAgents=${() => setAgentsOpen((v) => !v)}
           agentsOpen=${agentsOpen}
+          agentCount=${agentCount}
           currentUser=${currentUser}
         />
         ${activeView === "board" ? html`<${SkeletonBoard} />` : null}
@@ -519,8 +588,10 @@ export function App() {
         activeView=${activeView}
         onViewChange=${navigateTo}
         onRefresh=${refreshSafe}
+        refreshing=${refreshing}
         onToggleAgents=${() => setAgentsOpen((v) => !v)}
         agentsOpen=${agentsOpen}
+        agentCount=${agentCount}
         currentUser=${currentUser}
       />
 
@@ -534,6 +605,7 @@ export function App() {
           onMoveTask=${moveTask}
           onAddEpic=${() => openModal("create-epic", "Create Epic")}
           onAddFeature=${() => openModal("create-feature", "Create Feature")}
+          usersMap=${usersMap}
         />
       ` : null}
 
@@ -566,6 +638,7 @@ export function App() {
           lookup=${lookup}
           onSwitchModal=${pushModal}
           onSaveValues=${saveFrameValues}
+          usersMap=${usersMap}
         />
       ` : null}
 
@@ -622,6 +695,7 @@ export function App() {
         open=${agentsOpen}
         onClose=${() => setAgentsOpen(false)}
         health=${health}
+        agents=${agents}
       />
     </main>
   `;

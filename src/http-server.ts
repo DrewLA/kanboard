@@ -1,10 +1,15 @@
 import path from "node:path";
+import { randomUUID } from "node:crypto";
+import type { IncomingHttpHeaders } from "node:http";
 
 import fastifyStatic from "@fastify/static";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import Fastify, { FastifyInstance } from "fastify";
 import { z, ZodError } from "zod";
 
+import { AgentRegistry, createAgentRegistryFilePath } from "./agent-registry";
+import { AgentEventHub, BoardEventHub } from "./board-events";
 import { AppConfig, assertStorageConfig, getAppConfig } from "./config";
 import {
   boardBriefPatchSchema,
@@ -72,6 +77,34 @@ const unlockIdentityInputSchema = z.object({
   password: z.string().min(1, "Password is required.")
 });
 
+type McpSessionRuntime = {
+  server: ReturnType<typeof buildMcpServer>;
+  transport: StreamableHTTPServerTransport;
+};
+
+const MUTATING_MCP_TOOLS = new Set([
+  "update_board_brief",
+  "update_metadata",
+  "create_comment",
+  "update_comment",
+  "delete_comment",
+  "create_epic",
+  "update_epic",
+  "delete_epic",
+  "create_feature",
+  "update_feature",
+  "delete_feature",
+  "create_user_story",
+  "update_user_story",
+  "delete_user_story",
+  "create_task",
+  "update_task",
+  "delete_task",
+  "create_link",
+  "update_link",
+  "delete_link"
+]);
+
 let startupConfig: AppConfig | undefined;
 
 function buildAllowedHosts(config: AppConfig): Set<string> {
@@ -115,18 +148,100 @@ function createUnlockRateLimiter(): (ip: string) => boolean {
   };
 }
 
+function firstHeaderValue(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function getMcpSessionId(headers: IncomingHttpHeaders): string | undefined {
+  return firstHeaderValue(headers["mcp-session-id"]);
+}
+
+function jsonRpcMessages(body: unknown): unknown[] {
+  return Array.isArray(body) ? body : [body];
+}
+
+function isMcpInitializeBody(body: unknown): boolean {
+  return jsonRpcMessages(body).some((message) => isInitializeRequest(message));
+}
+
+function getMcpToolNames(body: unknown): string[] {
+  return jsonRpcMessages(body).flatMap((message) => {
+    if (typeof message !== "object" || message === null || Array.isArray(message)) {
+      return [];
+    }
+
+    const record = message as { method?: unknown; params?: unknown };
+    if (record.method !== "tools/call" || typeof record.params !== "object" || record.params === null || Array.isArray(record.params)) {
+      return [];
+    }
+
+    const toolName = (record.params as { name?: unknown }).name;
+    return typeof toolName === "string" && toolName.trim() ? [toolName] : [];
+  });
+}
+
+function hasMutatingMcpTool(body: unknown): boolean {
+  return getMcpToolNames(body).some((toolName) => MUTATING_MCP_TOOLS.has(toolName));
+}
+
+function mcpError(code: number, message: string): {
+  jsonrpc: "2.0";
+  error: { code: number; message: string };
+  id: null;
+} {
+  return {
+    jsonrpc: "2.0",
+    error: { code, message },
+    id: null
+  };
+}
+
 async function buildServer(config: AppConfig): Promise<FastifyInstance> {
   assertStorageConfig(config);
   const app = Fastify({ logger: true });
   const repository = createTaskboardRepository(config);
+  const agentRegistry = new AgentRegistry(createAgentRegistryFilePath(config.identityFile));
+  const boardEvents = new BoardEventHub();
+  const agentEvents = new AgentEventHub();
+  const mcpSessions = new Map<string, McpSessionRuntime>();
   const allowedHosts = buildAllowedHosts(config);
   const allowUnlock = createUnlockRateLimiter();
+
+  await agentRegistry.load();
 
   await repository.load({
     onCreate: () => {
       app.log.info(getStorageLogContext(config), formatCreatingKanboardMessage(config));
     }
   });
+
+  async function getCurrentBoardRevision(): Promise<number> {
+    return (await repository.load()).revision;
+  }
+
+  async function getAgentsPayload() {
+    const sessions = await agentRegistry.list();
+    const visibleSessions = sessions.filter((s) => s.status !== "closed");
+    return {
+      sessions: visibleSessions,
+      counts: {
+        connected: visibleSessions.filter((s) => s.status === "connected").length,
+        recent: visibleSessions.filter((s) => s.status === "recent").length
+      }
+    };
+  }
+
+  async function emitBoardChangedIfRevisionAdvanced(previousRevision: number, source: "mcp" | "api", tools?: string[]): Promise<void> {
+    const nextRevision = await getCurrentBoardRevision();
+    if (nextRevision <= previousRevision) return;
+
+    boardEvents.emitBoardChanged({
+      revision: nextRevision,
+      source,
+      tools,
+      changedAt: new Date().toISOString()
+    });
+  }
 
   app.addHook("onRequest", async (request, reply) => {
     const hostHeader = request.headers.host;
@@ -162,6 +277,18 @@ async function buildServer(config: AppConfig): Promise<FastifyInstance> {
     reply.status(500).send({ message: "Unexpected server error." });
   });
 
+  app.addHook("onClose", async () => {
+    const runtimes = [...mcpSessions.entries()];
+    mcpSessions.clear();
+    boardEvents.closeAll();
+    agentEvents.closeAll();
+
+    await Promise.all(runtimes.map(async ([sessionId, { transport }]) => {
+      await transport.close();
+      await agentRegistry.markDisconnected(sessionId);
+    }));
+  });
+
   app.get("/api/health", async () => ({
     ok: true,
     mode: config.mode,
@@ -171,6 +298,31 @@ async function buildServer(config: AppConfig): Promise<FastifyInstance> {
     port: config.port,
     identity: await repository.getIdentityStatus?.()
   }));
+
+  app.get("/api/agents", async () => {
+    const sessions = await agentRegistry.list();
+    const visibleSessions = sessions.filter((session) => session.status !== "closed");
+    return {
+      sessions: visibleSessions,
+      counts: {
+        connected: visibleSessions.filter((session) => session.status === "connected").length,
+        recent: visibleSessions.filter((session) => session.status === "recent").length
+      },
+      storePath: createAgentRegistryFilePath(config.identityFile)
+    };
+  });
+
+  app.get("/api/agents/events", async (request, reply) => {
+    const payload = await getAgentsPayload();
+    reply.hijack();
+    agentEvents.open(request.raw, reply.raw, payload);
+  });
+
+  app.get("/api/board-events", async (request, reply) => {
+    const revision = await getCurrentBoardRevision();
+    reply.hijack();
+    boardEvents.open(request.raw, reply.raw, revision);
+  });
 
   app.post("/api/identity/unlock", async (request, reply) => {
     if (!allowUnlock(request.ip)) {
@@ -258,30 +410,119 @@ async function buildServer(config: AppConfig): Promise<FastifyInstance> {
   );
   app.delete("/api/links/:linkId", async (request) => deleteWorkLink(repository, (request.params as { linkId: string }).linkId));
 
-  app.get("/mcp", async (_request, reply) => {
-    reply.status(405).send({ message: "Use POST /mcp for stateless MCP requests." });
+  app.get("/mcp", async (request, reply) => {
+    const sessionId = getMcpSessionId(request.headers);
+    if (!sessionId) {
+      reply.status(400).send(mcpError(-32000, "Bad Request: Mcp-Session-Id header is required."));
+      return;
+    }
+
+    const runtime = mcpSessions.get(sessionId);
+    if (!runtime) {
+      await agentRegistry.markDisconnected(sessionId);
+      reply.status(404).send(mcpError(-32001, "Session not active. Reinitialize the MCP session."));
+      return;
+    }
+
+    await agentRegistry.observeConnection(sessionId, {
+      ip: request.ip,
+      userAgent: firstHeaderValue(request.headers["user-agent"])
+    });
+    agentEvents.emit(await getAgentsPayload());
+
+    reply.hijack();
+    await runtime.transport.handleRequest(request.raw, reply.raw);
   });
 
-  app.delete("/mcp", async (_request, reply) => {
-    reply.status(405).send({ message: "Stateless MCP does not use DELETE sessions." });
+  app.delete("/mcp", async (request, reply) => {
+    const sessionId = getMcpSessionId(request.headers);
+    if (!sessionId) {
+      reply.status(400).send(mcpError(-32000, "Bad Request: Mcp-Session-Id header is required."));
+      return;
+    }
+
+    const runtime = mcpSessions.get(sessionId);
+    if (!runtime) {
+      await agentRegistry.markDisconnected(sessionId);
+      reply.status(404).send(mcpError(-32001, "Session not active. Reinitialize the MCP session."));
+      return;
+    }
+
+    reply.hijack();
+    await runtime.transport.handleRequest(request.raw, reply.raw);
+    agentEvents.emit(await getAgentsPayload());
   });
 
   app.post("/mcp", async (request, reply) => {
-    const server = buildMcpServer(repository);
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-
-    reply.hijack();
-
-    const cleanup = async (): Promise<void> => {
-      await transport.close();
-      await server.close();
+    const sessionId = getMcpSessionId(request.headers);
+    const context = {
+      ip: request.ip,
+      userAgent: firstHeaderValue(request.headers["user-agent"])
     };
 
-    reply.raw.on("close", () => {
-      void cleanup();
+    if (sessionId) {
+      const runtime = mcpSessions.get(sessionId);
+      if (!runtime) {
+        await agentRegistry.markDisconnected(sessionId);
+        reply.status(404).send(mcpError(-32001, "Session not active. Reinitialize the MCP session."));
+        return;
+      }
+
+      await agentRegistry.observeRequest(sessionId, request.body, context);
+      agentEvents.emit(await getAgentsPayload());
+      const toolNames = getMcpToolNames(request.body);
+      const previousRevision = hasMutatingMcpTool(request.body) ? await getCurrentBoardRevision() : null;
+      reply.hijack();
+      await runtime.transport.handleRequest(request.raw, reply.raw, request.body);
+      if (previousRevision != null) {
+        await emitBoardChangedIfRevisionAdvanced(previousRevision, "mcp", toolNames);
+      }
+      return;
+    }
+
+    if (!isMcpInitializeBody(request.body)) {
+      reply.status(400).send(mcpError(-32000, "Bad Request: No valid session ID provided."));
+      return;
+    }
+
+    const server = buildMcpServer(repository);
+    let isClosing = false;
+    let transport!: StreamableHTTPServerTransport;
+
+    transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => randomUUID(),
+      onsessioninitialized: async (initializedSessionId) => {
+        mcpSessions.set(initializedSessionId, { server, transport });
+        await agentRegistry.registerInitialized(initializedSessionId, request.body, context);
+        agentEvents.emit(await getAgentsPayload());
+      },
+      onsessionclosed: async (closedSessionId) => {
+        mcpSessions.delete(closedSessionId);
+        await agentRegistry.markClosed(closedSessionId);
+        agentEvents.emit(await getAgentsPayload());
+      }
     });
 
+    transport.onclose = () => {
+      if (isClosing) return;
+      isClosing = true;
+
+      const closedSessionId = transport.sessionId;
+      if (closedSessionId) {
+        mcpSessions.delete(closedSessionId);
+        void agentRegistry.markDisconnected(closedSessionId).then(async () => {
+          agentEvents.emit(await getAgentsPayload());
+        });
+      }
+      void server.close();
+    };
+
+    transport.onerror = (error) => {
+      app.log.warn({ error }, "MCP transport error.");
+    };
+
     await server.connect(transport);
+    reply.hijack();
     await transport.handleRequest(request.raw, reply.raw, request.body);
   });
 

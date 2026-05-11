@@ -210,6 +210,7 @@ export interface BoardBrief {
   currentFocus: string;
   updatedAt: string;
   updatedBy?: string;
+  updatedVia?: "mcp" | "api";
 }
 
 export type BoardMetadata = BoardBrief;
@@ -225,6 +226,7 @@ export interface BaseEntity {
   createdAt: string;
   updatedAt: string;
   updatedBy?: string;
+  updatedVia?: "mcp" | "api";
 }
 
 export interface Epic extends BaseEntity {

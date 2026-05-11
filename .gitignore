@@ -5,4 +5,5 @@ dist
 .kanboard/
 .github
 .backup
+.vscode
 npm-debug.log*

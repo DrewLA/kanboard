@@ -59,7 +59,8 @@ import {
   updateNodeComment,
   updateTask,
   updateUserStory,
-  updateWorkLink
+  updateWorkLink,
+  withMcpMutationSource
 } from "./taskboard-service";
 
 export const toolDefinitions = [
@@ -653,6 +654,7 @@ export function buildMcpServer(repository: TaskboardRepository): Server {
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...toolDefinitions] }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    return withMcpMutationSource(async () => {
     try {
       const args = request.params.arguments ?? {};
 
@@ -751,6 +753,7 @@ export function buildMcpServer(repository: TaskboardRepository): Server {
     } catch (error) {
       return toToolError(error);
     }
+    });
   });
 
   return server;

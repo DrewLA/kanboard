@@ -36,6 +36,17 @@ import { TaskboardRepository } from "./repository";
 
 let writeQueue: Promise<void> = Promise.resolve();
 let activeMutationEditor: string | undefined;
+let activeMutationSource: "mcp" | "api" | undefined;
+
+export async function withMcpMutationSource<T>(fn: () => Promise<T>): Promise<T> {
+  const previous = activeMutationSource;
+  activeMutationSource = "mcp";
+  try {
+    return await fn();
+  } finally {
+    activeMutationSource = previous;
+  }
+}
 
 export class NotFoundError extends Error {
   readonly statusCode = 404;
@@ -427,12 +438,13 @@ function touchEntity(entity: { updatedAt: string }, timestamp: string): void {
   entity.updatedAt = timestamp;
 }
 
-function touchEditableEntity(entity: { updatedAt: string; updatedBy?: string }, timestamp: string): void {
+function touchEditableEntity(entity: { updatedAt: string; updatedBy?: string; updatedVia?: "mcp" | "api" }, timestamp: string): void {
   touchEntity(entity, timestamp);
 
   if (activeMutationEditor) {
     entity.updatedBy = activeMutationEditor;
   }
+  entity.updatedVia = activeMutationSource ?? "api";
 }
 
 function touchFeatureLineage(document: TaskboardDocument, feature: Feature, timestamp: string): void {
@@ -767,8 +779,7 @@ async function mutateDocument<T>(
   return runSerializedWrite(async () => {
     const previousEditor = activeMutationEditor;
     const actor = await repository.getCurrentUser?.();
-    const actorName = actor?.name?.trim();
-    activeMutationEditor = actorName || undefined;
+    activeMutationEditor = actor?.id || undefined;
 
     try {
       const document = await repository.load();
@@ -943,7 +954,8 @@ export async function createEpic(
       featureIds: [],
       createdAt: timestamp,
       updatedAt: timestamp,
-      updatedBy: activeMutationEditor
+      updatedBy: activeMutationEditor,
+      updatedVia: activeMutationSource ?? "api"
     };
 
     return {
@@ -1032,7 +1044,8 @@ export async function createFeature(
       storyIds: [],
       createdAt: timestamp,
       updatedAt: timestamp,
-      updatedBy: activeMutationEditor
+      updatedBy: activeMutationEditor,
+      updatedVia: activeMutationSource ?? "api"
     };
 
     return {
@@ -1124,7 +1137,8 @@ export async function createUserStory(
       taskIds: [],
       createdAt: timestamp,
       updatedAt: timestamp,
-      updatedBy: activeMutationEditor
+      updatedBy: activeMutationEditor,
+      updatedVia: activeMutationSource ?? "api"
     };
 
     return {
@@ -1217,7 +1231,8 @@ export async function createTask(
       tags: input.tags,
       createdAt: timestamp,
       updatedAt: timestamp,
-      updatedBy: activeMutationEditor
+      updatedBy: activeMutationEditor,
+      updatedVia: activeMutationSource ?? "api"
     };
 
     return {
