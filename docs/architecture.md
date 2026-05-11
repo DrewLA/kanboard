@@ -15,6 +15,7 @@ The persisted document contains:
 - a monotonic board `revision`
 - ordered epic ids
 - keyed records for epics, features, user stories, and tasks
+- per-node edit attribution fields: `updatedAt`, `updatedBy` (public address), and `updatedVia` (`"api" | "mcp"`)
 
 Relationships are explicit:
 

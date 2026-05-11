@@ -203,9 +203,8 @@ class LocalStatePackageAdapter implements StateStorageAdapter {
   async loadPackage(): Promise<StatePackage> {
     const nextPackage = createEmptyStatePackage();
 
-    for (const tableName of tableNames) {
+    await Promise.all(tableNames.map(async (tableName) => {
       const filePath = path.join(this.directory, tableFileName(tableName));
-
       try {
         const raw = await readFile(filePath, "utf8");
         nextPackage.tables[tableName] = normalizeStatePackage({ tables: { [tableName]: JSON.parse(raw) } }).tables[tableName] as never;
@@ -214,7 +213,7 @@ class LocalStatePackageAdapter implements StateStorageAdapter {
           throw error;
         }
       }
-    }
+    }));
 
     return nextPackage;
   }
@@ -351,20 +350,15 @@ return cjson.encode({ ok = true })
   async loadPackage(): Promise<StatePackage> {
     const nextPackage = createEmptyStatePackage();
 
-    for (const tableName of tableNames) {
+    await Promise.all(tableNames.map(async (tableName) => {
       const raw = await this.redis.get<string | null>(this.tableKey(tableName));
 
-      if (raw === null || raw === undefined) {
-        continue;
-      }
+      if (raw === null || raw === undefined) return;
 
-      if (typeof raw !== "string") {
-        nextPackage.tables[tableName] = normalizeStatePackage({ tables: { [tableName]: raw } }).tables[tableName] as never;
-        continue;
-      }
-
-      nextPackage.tables[tableName] = normalizeStatePackage({ tables: { [tableName]: JSON.parse(raw) } }).tables[tableName] as never;
-    }
+      nextPackage.tables[tableName] = normalizeStatePackage({
+        tables: { [tableName]: typeof raw === "string" ? JSON.parse(raw) : raw }
+      }).tables[tableName] as never;
+    }));
 
     return nextPackage;
   }

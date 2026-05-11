@@ -30,6 +30,106 @@ Core operating rules:
 - MCP is exposed over localhost HTTP at `POST /mcp` on the same runtime as the UI and REST API.
 - Mutations are serialized server-side. Agents do not need to send revision tokens.
 
+## Guiding The User Through Setup
+
+If you cannot reach the MCP server (connection refused, timeout, 404 at `http://127.0.0.1:8787/mcp`) or the user says the board is not set up, walk them through these steps. Ask after each step before continuing. Do not run these commands yourself — the user runs them on their own machine.
+
+### Step 1 — Verify prerequisites
+
+Have the user confirm Node and npm versions:
+
+```bash
+node --version   # must be v20.x.x or higher
+npm --version    # must be 10.x.x or higher
+```
+
+If either is missing or too old, point them to https://nodejs.org and stop until they have the right versions.
+
+### Step 2 — Install dependencies
+
+From inside the cloned kanboard repo:
+
+```bash
+make install
+```
+
+### Step 3 — Pick a mode and configure `.env`
+
+Ask which mode fits their use case:
+
+- **private** — local-only JSON state, no database. Easiest start. No identity registration required for other users.
+- **private-backup** — local JSON state plus hourly backup to a remote Upstash DB. Requires a `TASKBOARD_DB_STRING`.
+- **team** — collaborative. Every member connects through the same Upstash DB and registers their own identity. Anyone in the DB is an admin; the connection string is the access boundary.
+
+Then:
+
+```bash
+cp .env.example .env
+```
+
+For private mode, the minimum is:
+
+```ini
+TASKBOARD_MODE=private
+```
+
+For team mode they also need:
+
+```ini
+TASKBOARD_MODE=team
+TASKBOARD_DB_STRING=upstash;url=https://...;token=...;prefix=kanboard:main
+```
+
+The `prefix` scopes all keys in the shared DB. Changing it creates a new board.
+
+### Step 4 — Onboard their identity
+
+```bash
+npm run identity:onboard
+```
+
+This interactive script:
+
+1. Detects the mode and pings the DB if configured.
+2. Prompts for name, role, optional email.
+3. Generates a new EVM identity and shows the seed phrase **once** — they must write it down.
+4. Asks for a password to encrypt the local identity file.
+5. Writes `.kanboard/identity.json` and `.kanboard/user.json`.
+6. In team mode: initializes the shared board tables if empty, then registers the user.
+
+For team mode, each new member runs this on their own machine and gets auto-registered.
+
+### Step 5 — Start the server
+
+```bash
+make dev
+```
+
+The server binds to `http://127.0.0.1:8787`. The user opens that URL in a browser and unlocks with the password from step 4.
+
+### Step 6 — Connect your MCP client
+
+Tell the user to add the kanboard MCP server to their agent (Claude Code, Cursor, etc.) pointing at:
+
+```text
+http://127.0.0.1:8787/mcp
+```
+
+For Claude Code specifically:
+
+```bash
+claude mcp add --transport http kanboard http://127.0.0.1:8787/mcp
+```
+
+Once the server is up and the MCP client is connected, retry `get_taskboard` to verify. If it returns `KB_IDENTITY_LOCKED`, the server is running but the user hasn't unlocked — send them to the UI or `POST /api/identity/unlock`.
+
+### Common setup failures
+
+- **`make install` fails** — usually a Node version mismatch. Re-check step 1.
+- **`npm run identity:onboard` reports DB unreachable in team mode** — the `TASKBOARD_DB_STRING` is wrong, expired, or the network is blocked. Have them verify the URL/token in their Upstash console.
+- **`KB_IDENTITY_LOCKED` on every write** — they restarted the server. Unlock identity from the UI before retrying writes.
+- **`KB_IDENTITY_NOT_REGISTERED` in team mode** — they generated a new identity but aren't in the shared `users` table. Ask the team admin (anyone already in the DB) to add their address, or have them re-run `identity:onboard` in team mode to register themselves.
+
 ## How To Use The Board
 
 1. Call `get_taskboard` once at the start of a session or when you need a full-board audit.

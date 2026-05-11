@@ -287,6 +287,7 @@ async function buildServer(config: AppConfig): Promise<FastifyInstance> {
       await transport.close();
       await agentRegistry.markDisconnected(sessionId);
     }));
+    await agentRegistry.flush();
   });
 
   app.get("/api/health", async () => ({

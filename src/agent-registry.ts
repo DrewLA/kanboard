@@ -338,6 +338,10 @@ export class AgentRegistry {
     }
   }
 
+  async flush(): Promise<void> {
+    await this.writeQueue;
+  }
+
   private async persist(): Promise<void> {
     this.store.updatedAt = nowIso();
     const payload = JSON.stringify(this.store, null, 2);
@@ -347,8 +351,8 @@ export class AgentRegistry {
       await mkdir(path.dirname(this.filePath), { recursive: true });
       await writeFile(tmpPath, payload, { encoding: "utf8", mode: 0o600 });
       await rename(tmpPath, this.filePath);
+    }).catch((error) => {
+      console.error("agent-registry persist failed:", error);
     });
-
-    await this.writeQueue;
   }
 }
