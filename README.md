@@ -32,6 +32,18 @@ One `127.0.0.1`-bound Fastify process per user.
 
 > **Security notice**: This project does not implement production security controls (authentication, authorization, rate limiting, or internet-facing hardening). It is designed for trusted local use only. Never expose this service to the public internet.
 
+## Requirements
+
+- **Node.js** ≥ 20 (LTS recommended — [nodejs.org](https://nodejs.org))
+- **npm** ≥ 10 (bundled with Node 20+)
+
+Verify before installing:
+
+```bash
+node --version   # should print v20.x.x or higher
+npm --version    # should print 10.x.x or higher
+```
+
 ## First-run setup
 
 ### 1. Install dependencies

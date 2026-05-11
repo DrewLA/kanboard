@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "description": "Local-only agile taskboard with Redis persistence, CRUD functions, a simple UI, and an MCP server.",
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx watch src/http-server.ts",

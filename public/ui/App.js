@@ -584,9 +584,9 @@ export function App() {
 
       ${needsUnlock ? html`
         <div className="modal-backdrop" role="presentation">
-          <div className="modal-shell modal-shell--sm unlock-shell" role="dialog" aria-modal="true" aria-label="Unlock team identity">
+          <div className="modal-shell modal-shell--sm unlock-shell" role="dialog" aria-modal="true" aria-label="Unlock identity">
             <div className="modal-header">
-              <h2>Unlock Team Identity</h2>
+              <h2>Unlock Identity</h2>
             </div>
             <form
               className="form-grid"
@@ -596,16 +596,8 @@ export function App() {
               }}
               autoComplete="off"
             >
-              <p className="unlock-copy">
-                This board is running, but team mutations stay locked until the local identity file is unlocked in the browser.
-              </p>
-              ${identityStatus?.address ? html`
-                <div className="inline-note unlock-address">
-                  Address: ${identityStatus.address}${identityStatus.registered === false ? " (not registered on this board)" : ""}
-                </div>
-              ` : null}
               <label>
-                Identity password
+                Password
                 <input
                   type="password"
                   value=${unlockPassword}

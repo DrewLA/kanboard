@@ -74,14 +74,65 @@ const unlockIdentityInputSchema = z.object({
 
 let startupConfig: AppConfig | undefined;
 
+function buildAllowedHosts(config: AppConfig): Set<string> {
+  const allowed = new Set<string>();
+  const ports = new Set<string>([String(config.port)]);
+
+  for (const port of ports) {
+    allowed.add(`127.0.0.1:${port}`);
+    allowed.add(`localhost:${port}`);
+    allowed.add(`[::1]:${port}`);
+  }
+
+  if (config.host && config.host !== "127.0.0.1" && config.host !== "0.0.0.0") {
+    for (const port of ports) {
+      allowed.add(`${config.host}:${port}`);
+    }
+  }
+
+  return allowed;
+}
+
+const UNLOCK_RATE_WINDOW_MS = 60_000;
+const UNLOCK_RATE_MAX_ATTEMPTS = 5;
+
+function createUnlockRateLimiter(): (ip: string) => boolean {
+  const attempts = new Map<string, number[]>();
+
+  return (ip: string): boolean => {
+    const now = Date.now();
+    const cutoff = now - UNLOCK_RATE_WINDOW_MS;
+    const history = (attempts.get(ip) ?? []).filter((stamp) => stamp >= cutoff);
+
+    if (history.length >= UNLOCK_RATE_MAX_ATTEMPTS) {
+      attempts.set(ip, history);
+      return false;
+    }
+
+    history.push(now);
+    attempts.set(ip, history);
+    return true;
+  };
+}
+
 async function buildServer(config: AppConfig): Promise<FastifyInstance> {
   assertStorageConfig(config);
   const app = Fastify({ logger: true });
   const repository = createTaskboardRepository(config);
+  const allowedHosts = buildAllowedHosts(config);
+  const allowUnlock = createUnlockRateLimiter();
 
   await repository.load({
     onCreate: () => {
       app.log.info(getStorageLogContext(config), formatCreatingKanboardMessage(config));
+    }
+  });
+
+  app.addHook("onRequest", async (request, reply) => {
+    const hostHeader = request.headers.host;
+
+    if (!hostHeader || !allowedHosts.has(hostHeader.toLowerCase())) {
+      reply.status(403).send({ message: "Forbidden." });
     }
   });
 
@@ -99,7 +150,6 @@ async function buildServer(config: AppConfig): Promise<FastifyInstance> {
     if (error instanceof RepositoryConflictError) {
       reply.status(409).send({
         message: "Kanboard storage revision conflict.",
-        detail: error.message,
         operation: error.operation,
         expectedRevision: error.expectedRevision,
         currentRevision: error.currentRevision,
@@ -109,9 +159,7 @@ async function buildServer(config: AppConfig): Promise<FastifyInstance> {
     }
 
     app.log.error(error);
-    reply.status(500).send({
-      message: error instanceof Error ? error.message : "Unexpected server error."
-    });
+    reply.status(500).send({ message: "Unexpected server error." });
   });
 
   app.get("/api/health", async () => ({
@@ -119,13 +167,17 @@ async function buildServer(config: AppConfig): Promise<FastifyInstance> {
     mode: config.mode,
     stateDir: config.stateDir,
     dbConfigured: Boolean(config.dbString),
-    dbKey: config.mode === "team" || config.mode === "private-backup" ? config.redisKey : undefined,
     host: config.host,
     port: config.port,
     identity: await repository.getIdentityStatus?.()
   }));
 
-  app.post("/api/identity/unlock", async (request) => {
+  app.post("/api/identity/unlock", async (request, reply) => {
+    if (!allowUnlock(request.ip)) {
+      reply.status(429).send({ message: "Too many unlock attempts. Try again shortly." });
+      return reply;
+    }
+
     const payload = parseBody(unlockIdentityInputSchema, request.body);
     const identity = await repository.unlockIdentity?.(payload.password);
     const currentUser = await repository.getCurrentUser?.();
