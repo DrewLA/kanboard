@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -5,9 +6,10 @@ import { Redis } from "@upstash/redis";
 import { getAddress } from "ethers";
 
 import { getAppConfig } from "../config";
+import { deriveAddress, signMutationEnvelope } from "../identity";
 import { createEmptyTaskboardDocument, nowIso } from "../model";
 import { StateTable, UserRecord, statePackageFromDocument, tableNames } from "../state-package";
-import { createEncryptedIdentity, fileExists, promptHidden, promptLine, writeIdentityFile } from "../identity-store";
+import { createEncryptedIdentity, decryptPrivateKey, fileExists, promptHidden, promptLine, readIdentityFile, writeIdentityFile } from "../identity-store";
 
 const AVATAR_COLORS = [
   "#2563eb", "#7c3aed", "#db2777", "#dc2626",
@@ -82,9 +84,25 @@ async function readExistingAddress(userFile: string): Promise<string | null> {
   }
 }
 
+async function readExistingProfile(userFile: string): Promise<UserRecord | null> {
+  try {
+    const raw = await readFile(userFile, { encoding: "utf8" });
+    const parsed = JSON.parse(raw);
+    return parsed?.userRecord && typeof parsed.userRecord === "object" ? parsed.userRecord as UserRecord : null;
+  } catch {
+    return null;
+  }
+}
+
 async function promptConfirm(question: string): Promise<boolean> {
   const answer = await promptLine(question);
   return answer.trim().toLowerCase() === "y";
+}
+
+async function promptConfirmDefaultYes(question: string): Promise<boolean> {
+  const answer = await promptLine(question);
+  const normalized = answer.trim().toLowerCase();
+  return normalized === "" || normalized === "y" || normalized === "yes";
 }
 
 async function checkUsersTableExists(redis: Redis, dbString: string): Promise<boolean> {
@@ -94,10 +112,87 @@ async function checkUsersTableExists(redis: Redis, dbString: string): Promise<bo
   return raw !== null;
 }
 
+async function writeLocalUserFile(userFile: string, userRecord: UserRecord): Promise<void> {
+  await mkdir(path.dirname(userFile), { recursive: true });
+  await writeFile(userFile, JSON.stringify({
+    address: userRecord.id,
+    userRecord
+  }, null, 2), { encoding: "utf8", mode: 0o600 });
+}
+
+async function promptProfile(existing: UserRecord | null, address: string): Promise<UserRecord> {
+  let displayName = "";
+  const defaultName = existing?.name?.trim() || "";
+
+  while (!displayName.trim()) {
+    const prompt = defaultName ? `Display name [${defaultName}]: ` : "Display name: ";
+    displayName = (await promptLine(prompt)).trim() || defaultName;
+
+    if (!displayName.trim()) {
+      console.error("  Name cannot be empty.");
+    }
+  }
+
+  const defaultRole = existing?.role?.trim() || "member";
+  const roleInput = await promptLine(`Role (e.g. engineer, designer, pm) [${defaultRole}]: `);
+  const role = roleInput.trim() || defaultRole;
+
+  const defaultEmail = existing?.email?.trim() || "";
+  const emailInput = await promptLine(defaultEmail ? `Email [${defaultEmail}]: ` : "Email (optional, press Enter to skip): ");
+  const email = emailInput.trim() || defaultEmail || undefined;
+
+  const timestamp = nowIso();
+  return {
+    id: getAddress(address),
+    name: displayName,
+    role,
+    ...(email ? { email } : {}),
+    avatarIcon: existing?.avatarIcon ?? "user",
+    avatarColor: existing?.avatarColor ?? randomAvatarColor(),
+    createdAt: existing?.createdAt ?? timestamp,
+    updatedAt: timestamp
+  };
+}
+
+async function registerUserInTeamDb(options: {
+  redis: Redis;
+  dbString: string;
+  userRecord: UserRecord;
+  privateKey: string;
+  isFirstTeamSetup: boolean;
+}): Promise<void> {
+  if (options.isFirstTeamSetup) {
+    console.log("  Initializing team board tables in database...");
+    await initializeTeamPackageInDb(options.redis, options.dbString);
+    console.log("  ✓ Team board initialized.");
+  }
+
+  const parsed = parseDbString(options.dbString);
+  const tableKey = (name: string) => `${parsed.prefix}:table:${name}`;
+  const usersRaw = await options.redis.get<string | null>(tableKey("users"));
+  const usersTable = usersRaw ? JSON.parse(usersRaw) as StateTable<UserRecord> : null;
+  const currentUserVersion = usersTable?.rows?.[options.userRecord.id]?.version ?? 0;
+  const metadataRaw = await options.redis.get<string | null>(tableKey("metadata"));
+  const metadataTable = metadataRaw ? JSON.parse(metadataRaw) as StateTable<{ projectId?: string }> : null;
+  const projectId = metadataTable?.rows?.project?.value?.projectId ?? "project";
+  const signature = await signMutationEnvelope(options.privateKey, projectId, {
+    nonce: randomUUID(),
+    issuedAt: nowIso(),
+    summary: `Register team user ${options.userRecord.id}`,
+    readSet: [{ table: "users", id: options.userRecord.id, version: currentUserVersion }]
+  });
+
+  console.log(`  ✓ Registration signature created for ${signature.actor}.`);
+  console.log("  Registering user in database...");
+  await upsertUserInDb(options.redis, options.dbString, options.userRecord);
+  console.log("  ✓ User record written to database.");
+}
+
 async function main(): Promise<void> {
   const force = process.argv.includes("--force");
   const config = getAppConfig();
   const identityPath = config.identityFile;
+  let registerExistingIdentity = false;
 
   // ── Intro ─────────────────────────────────────────────────────────────────
   console.log("");
@@ -117,7 +212,8 @@ async function main(): Promise<void> {
 
   // ── Check for existing identity ──────────────────────────────────────────
   if ((await fileExists(identityPath)) && !force) {
-    const existingAddress = await readExistingAddress(config.userFile);
+    const existingIdentity = await readIdentityFile(identityPath);
+    const existingAddress = existingIdentity.address || await readExistingAddress(config.userFile);
 
     console.log("");
     console.log("An identity file already exists at:");
@@ -125,17 +221,30 @@ async function main(): Promise<void> {
 
     if (existingAddress) {
       console.log("");
-      console.log(`Maybe your address is: ${existingAddress}`);
-      console.log("(Cannot be certain — identity.json may have been edited manually.)");
+      console.log(`Address: ${existingAddress}`);
+      console.log("(Read from identity.json.)");
     }
 
     console.log("");
 
-    const confirmed = await promptConfirm("Overwrite existing identity? This cannot be undone. [y/N] ");
+    if (config.mode === "team" && config.dbString) {
+      registerExistingIdentity = await promptConfirmDefaultYes("Register this existing identity in the current team database? [Y/n] ");
 
-    if (!confirmed) {
-      console.log("Aborted.");
-      process.exit(0);
+      if (!registerExistingIdentity) {
+        const confirmed = await promptConfirm("Overwrite existing identity? This cannot be undone. [y/N] ");
+
+        if (!confirmed) {
+          console.log("Aborted.");
+          process.exit(0);
+        }
+      }
+    } else {
+      const confirmed = await promptConfirm("Overwrite existing identity? This cannot be undone. [y/N] ");
+
+      if (!confirmed) {
+        console.log("Aborted.");
+        process.exit(0);
+      }
     }
 
     console.log("");
@@ -175,25 +284,69 @@ async function main(): Promise<void> {
     }
   }
 
+  if (registerExistingIdentity) {
+    if (!redis || !config.dbString) {
+      console.error("Cannot register existing identity because the configured team database is not reachable.");
+      process.exit(1);
+    }
+
+    const identityFile = await readIdentityFile(identityPath);
+    const address = getAddress(identityFile.address);
+    const existingProfile = await readExistingProfile(config.userFile);
+
+    console.log("── Step 1 of 3: Your profile ────────────────────────────────────");
+    console.log("");
+    const userRecord = await promptProfile(existingProfile, address);
+
+    console.log("");
+    console.log("── Step 2 of 3: Unlock identity ─────────────────────────────────");
+    console.log("");
+    const password = await promptHidden("Identity password: ");
+    const privateKey = await decryptPrivateKey(identityFile, password);
+    const decryptedAddress = getAddress(deriveAddress(privateKey));
+
+    if (decryptedAddress !== address) {
+      throw new Error(`Encrypted identity file address ${address} does not match decrypted private key address ${decryptedAddress}.`);
+    }
+
+    console.log("  ✓ Identity unlocked.");
+
+    console.log("");
+    console.log("── Step 3 of 3: Registering identity ────────────────────────────");
+    console.log("");
+
+    await writeLocalUserFile(config.userFile, userRecord);
+    console.log(`  ✓ Profile written to ${path.relative(process.cwd(), config.userFile)}`);
+
+    await registerUserInTeamDb({
+      redis,
+      dbString: config.dbString,
+      userRecord,
+      privateKey,
+      isFirstTeamSetup
+    });
+
+    const boardUrl = `http://${config.host}:${config.port}`;
+    console.log("");
+    console.log("╔════════════════════════════════════════╗");
+    console.log("║           Setup complete! ✓            ║");
+    console.log("╚════════════════════════════════════════╝");
+    console.log("");
+    console.log(`  Address : ${userRecord.id}`);
+    console.log(`  Name    : ${userRecord.name}`);
+    console.log(`  Role    : ${userRecord.role}`);
+    console.log("");
+    console.log("  Your existing identity is now registered for this team board.");
+    console.log(`  Open: ${boardUrl}`);
+    console.log("");
+    return;
+  }
+
   // ── Profile questions ─────────────────────────────────────────────────────
   console.log("── Step 1 of 3: Your profile ────────────────────────────────────");
   console.log("");
 
-  let displayName = "";
-
-  while (!displayName.trim()) {
-    displayName = await promptLine("Display name: ");
-
-    if (!displayName.trim()) {
-      console.error("  Name cannot be empty.");
-    }
-  }
-
-  const roleInput = await promptLine("Role (e.g. engineer, designer, pm) [member]: ");
-  const role = roleInput.trim() || "member";
-
-  const emailInput = await promptLine("Email (optional, press Enter to skip): ");
-  const email = emailInput.trim() || undefined;
+  const profile = await promptProfile(null, "0x0000000000000000000000000000000000000000");
 
   // ── Key generation ────────────────────────────────────────────────────────
   console.log("");
@@ -244,35 +397,29 @@ async function main(): Promise<void> {
   const timestamp = nowIso();
   const userRecord: UserRecord = {
     id: getAddress(identity.address),
-    name: displayName.trim(),
-    role,
-    ...(email ? { email } : {}),
-    avatarIcon: "user",
-    avatarColor: randomAvatarColor(),
+    name: profile.name,
+    role: profile.role,
+    ...(profile.email ? { email: profile.email } : {}),
+    avatarIcon: profile.avatarIcon,
+    avatarColor: profile.avatarColor,
     createdAt: timestamp,
     updatedAt: timestamp
   };
 
   // ── Write user.json ───────────────────────────────────────────────────────
-  await mkdir(path.dirname(config.userFile), { recursive: true });
-  await writeFile(config.userFile, JSON.stringify({
-    address: userRecord.id,
-    userRecord
-  }, null, 2), { encoding: "utf8", mode: 0o600 });
+  await writeLocalUserFile(config.userFile, userRecord);
   console.log(`  ✓ Profile written to ${path.relative(process.cwd(), config.userFile)}`);
 
   // ── Write to DB ───────────────────────────────────────────────────────────
   if (redis && config.dbString) {
     try {
-      if (isFirstTeamSetup) {
-        console.log("  Initializing team board tables in database...");
-        await initializeTeamPackageInDb(redis, config.dbString);
-        console.log("  ✓ Team board initialized.");
-      }
-
-      console.log("  Registering user in database...");
-      await upsertUserInDb(redis, config.dbString, userRecord);
-      console.log("  ✓ User record written to database.");
+      await registerUserInTeamDb({
+        redis,
+        dbString: config.dbString,
+        userRecord,
+        privateKey: identity.privateKey,
+        isFirstTeamSetup
+      });
     } catch (err) {
       console.error(`  ✗ Failed to write to database: ${err instanceof Error ? err.message : String(err)}`);
       console.error("  Your local identity was saved, but team onboarding did not finish. Fix the DB issue and run onboarding again.");

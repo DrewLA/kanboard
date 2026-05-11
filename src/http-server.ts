@@ -29,7 +29,7 @@ import {
   updateWorkLinkInputSchema
 } from "./model";
 import { buildMcpServer } from "./mcp-core";
-import { RepositoryConflictError, createTaskboardRepository } from "./repository";
+import { RepositoryAccessError, RepositoryConflictError, createTaskboardRepository } from "./repository";
 import {
   NotFoundError,
   createNodeComment,
@@ -269,6 +269,22 @@ async function buildServer(config: AppConfig): Promise<FastifyInstance> {
         expectedRevision: error.expectedRevision,
         currentRevision: error.currentRevision,
         recovery: "Reload the board and retry. If this keeps happening, check for another kanboard process or client using the same storage location."
+      });
+      return;
+    }
+
+    if (error instanceof RepositoryAccessError) {
+      const statusByCode: Record<string, number> = {
+        KB_IDENTITY_LOCKED: 423,
+        KB_IDENTITY_SETUP_REQUIRED: 400,
+        KB_IDENTITY_NOT_REGISTERED: 403,
+        KB_IDENTITY_FILE_MISMATCH: 409
+      };
+
+      reply.status(statusByCode[error.code] ?? 403).send({
+        message: error.message,
+        code: error.code,
+        recovery: error.recovery
       });
       return;
     }
