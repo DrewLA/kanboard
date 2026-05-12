@@ -16,6 +16,7 @@
     "mcp:start": "node dist/mcp-server.js",
     "identity:onboard": "tsx src/scripts/identity-onboard.ts",
     "identity:whoami": "tsx src/scripts/whoami.ts",
+    "upgrade": "tsx src/scripts/upgrade.ts",
     "typecheck": "tsc --noEmit",
     "migrate:up": "tsx src/scripts/migrate.ts up",
     "migrate:down": "tsx src/scripts/migrate.ts down"
