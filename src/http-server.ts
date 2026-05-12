@@ -1,5 +1,5 @@
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import type { IncomingHttpHeaders } from "node:http";
 
 import fastifyStatic from "@fastify/static";
@@ -128,6 +128,12 @@ function buildAllowedHosts(config: AppConfig): Set<string> {
 
 const UNLOCK_RATE_WINDOW_MS = 60_000;
 const UNLOCK_RATE_MAX_ATTEMPTS = 5;
+const IDENTITY_UNLOCK_COOKIE_NAME = "kb_identity_unlocked";
+const API_IDENTITY_UNLOCK_REQUIRED_RESPONSE = {
+  message: "HTTP API access requires an unlocked browser session.",
+  code: "KB_IDENTITY_UNLOCK_SESSION_REQUIRED",
+  recovery: "Unlock identity from the browser UI. Agents must use the MCP endpoint and must not call the HTTP API directly."
+};
 
 function createUnlockRateLimiter(): (ip: string) => boolean {
   const attempts = new Map<string, number[]>();
@@ -150,6 +156,37 @@ function createUnlockRateLimiter(): (ip: string) => boolean {
 
 function firstHeaderValue(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
+}
+
+function parseCookies(cookieHeader: string | undefined): Record<string, string> {
+  if (!cookieHeader) return {};
+
+  return Object.fromEntries(cookieHeader.split(";").flatMap((part) => {
+    const [name, ...rawValue] = part.trim().split("=");
+    if (!name) return [];
+    return [[name, decodeURIComponent(rawValue.join("="))]];
+  }));
+}
+
+function buildIdentityUnlockCookie(token: string): string {
+  return [
+    `${IDENTITY_UNLOCK_COOKIE_NAME}=${encodeURIComponent(token)}`,
+    "Path=/api",
+    "HttpOnly",
+    "SameSite=Strict"
+  ].join("; ");
+}
+
+function hasIdentityUnlockSession(headers: IncomingHttpHeaders, sessions: Set<string>): boolean {
+  const cookies = parseCookies(firstHeaderValue(headers.cookie));
+  return Boolean(cookies[IDENTITY_UNLOCK_COOKIE_NAME] && sessions.has(cookies[IDENTITY_UNLOCK_COOKIE_NAME]));
+}
+
+function isPreUnlockApiRequest(method: string, url: string): boolean {
+  return (
+    (method === "GET" && url === "/api/health") ||
+    (method === "POST" && url === "/api/identity/unlock")
+  );
 }
 
 function getMcpSessionId(headers: IncomingHttpHeaders): string | undefined {
@@ -206,6 +243,7 @@ async function buildServer(config: AppConfig): Promise<FastifyInstance> {
   const mcpSessions = new Map<string, McpSessionRuntime>();
   const allowedHosts = buildAllowedHosts(config);
   const allowUnlock = createUnlockRateLimiter();
+  const identityUnlockSessions = new Set<string>();
 
   await agentRegistry.load();
 
@@ -248,6 +286,14 @@ async function buildServer(config: AppConfig): Promise<FastifyInstance> {
 
     if (!hostHeader || !allowedHosts.has(hostHeader.toLowerCase())) {
       reply.status(403).send({ message: "Forbidden." });
+      return;
+    }
+
+    if (request.url.startsWith("/api/")) {
+      if (config.mode === "team" && !isPreUnlockApiRequest(request.method, request.url) && !hasIdentityUnlockSession(request.headers, identityUnlockSessions)) {
+        reply.status(401).send(API_IDENTITY_UNLOCK_REQUIRED_RESPONSE);
+      }
+      return;
     }
   });
 
@@ -350,6 +396,9 @@ async function buildServer(config: AppConfig): Promise<FastifyInstance> {
     const payload = parseBody(unlockIdentityInputSchema, request.body);
     const identity = await repository.unlockIdentity?.(payload.password);
     const currentUser = await repository.getCurrentUser?.();
+    const identityUnlockToken = randomBytes(32).toString("base64url");
+    identityUnlockSessions.add(identityUnlockToken);
+    reply.header("Set-Cookie", buildIdentityUnlockCookie(identityUnlockToken));
     return { identity, currentUser };
   });
 

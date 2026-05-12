@@ -200,13 +200,20 @@ export function App() {
     if (showSpinner) setRefreshing(true);
 
     const run = (async () => {
-      const [nextHealth, nextTaskboard, nextUser, nextUsers] = await Promise.all([
-        request("/api/health"),
+      const nextHealth = await request("/api/health");
+      setHealth(nextHealth);
+
+      if (nextHealth?.identity?.required && !nextHealth.identity.unlocked) {
+        setCurrentUser(null);
+        setUsers([]);
+        return;
+      }
+
+      const [nextTaskboard, nextUser, nextUsers] = await Promise.all([
         request("/api/taskboard"),
         request("/api/users/me").catch(() => null),
         request("/api/users").catch(() => [])
       ]);
-      setHealth(nextHealth);
       setTaskboard(nextTaskboard);
       setCurrentUser(nextUser);
       setUsers(nextUsers || []);
@@ -546,7 +553,7 @@ export function App() {
 
   const refreshSafe = () => reload({ showSpinner: true }).catch((err) => setFlashError(getErrorMessage(err)));
   const boardBrief = taskboard?.boardBrief || {};
-  const showLoadingShell = !taskboard || unlockRefreshing;
+  const showLoadingShell = (!taskboard && !needsUnlock) || unlockRefreshing;
 
 
   // --- Skeleton loading logic ---
