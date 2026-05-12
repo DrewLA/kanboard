@@ -93,7 +93,7 @@ async function main(): Promise<void> {
   }
 
   console.log("");
-  console.log("Upgrade complete. Restart with 'make start");
+  console.log("Upgrade complete. Restart with 'make start'");
 }
 
 void main().catch((error) => {
