@@ -31,6 +31,19 @@ This shape makes the implementation compact while still supporting:
 - cascading deletes
 - one-read snapshot generation for MCP and HTTP consumers
 
+### Comments
+
+Comments are stored in a flat `comments` table in the state package, separate from the entity rows. Each record carries `nodeType` and `nodeId` to link back to the owning entity. At read time, `attachComments` joins them onto the entity's `comments[]` field. At write time, `stripComments` removes them from entity rows and `collectComments` rebuilds the flat table. This means entity rows on disk always have `comments: []` — the flat table is the source of truth.
+
+Comments are first-class objects exposed via the REST API and MCP. Agents use them for agent-to-agent coordination (requirements, blockers, handoff notes). The UI exposes a comments pane on task edit overlays.
+
+### Task fields
+
+Tasks carry additional fields beyond the base entity:
+
+- `assignedTo`: user ID of the assigned team member (optional)
+- `authorId`: user ID of the first editor — set at creation time, never overwritten (optional, not shown in UI yet)
+
 ## Persistence model
 
 The board persists as one JSON document behind a repository interface.
