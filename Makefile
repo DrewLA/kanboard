@@ -11,7 +11,7 @@ build:
 dev:
 	npm run dev
 
-start:
+start: build
 	npm run start
 
 local:
