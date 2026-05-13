@@ -269,6 +269,14 @@ export function App() {
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
 
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") reload().catch(() => {});
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, []);
+
   const identityStatus = health?.identity || null;
   const needsUnlock = Boolean(identityStatus?.required && !identityStatus?.unlocked && !unlockRefreshing);
 
@@ -515,6 +523,7 @@ export function App() {
   function navigateTo(view) {
     setActiveView(view);
     window.location.hash = `/${view}`;
+    reload().catch(() => {});
   }
 
 
@@ -648,6 +657,7 @@ export function App() {
           onSwitchModal=${pushModal}
           onSaveValues=${saveFrameValues}
           usersMap=${usersMap}
+          currentUser=${currentUser}
         />
       ` : null}
 
