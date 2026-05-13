@@ -512,6 +512,7 @@ select:focus {
 }
 
 .task-card {
+  position: relative;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   background: linear-gradient(155deg, rgba(8, 22, 54, 0.84), rgba(4, 14, 38, 0.78));
@@ -2036,6 +2037,24 @@ label .cselect-trigger {
     margin-left: 0;
     opacity: 1 !important;
   }
+}
+
+.notif-dot {
+  position: absolute;
+  top: 9px;
+  right: 9px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px rgba(77, 168, 255, 0.22);
+  animation: notif-pulse 2.4s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes notif-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(77, 168, 255, 0.22); }
+  50% { box-shadow: 0 0 0 5px rgba(77, 168, 255, 0.07); }
 }
 
 .unlock-success {

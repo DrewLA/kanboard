@@ -43,7 +43,7 @@ function UserCardChip({ user }) {
 
 export { MetaChip };
 
-export function BoardView({ taskboard, filters, onFilterChange, onAddTask, onTaskClick, onMoveTask, onAddEpic, onAddFeature, usersMap }) {
+export function BoardView({ taskboard, filters, onFilterChange, onAddTask, onTaskClick, onMoveTask, onAddEpic, onAddFeature, usersMap, notifications, currentUserId }) {
   const epics = taskboard?.epics || [];
   const allContexts = useMemo(() => getTaskContexts(taskboard), [taskboard]);
 
@@ -97,7 +97,9 @@ export function BoardView({ taskboard, filters, onFilterChange, onAddTask, onTas
                       }}
                     >
                       ${items.length
-                        ? items.map(({ epic, feature, story, task }) => html`
+                        ? items.map(({ epic, feature, story, task }) => {
+                            const hasNotif = notifications?.some((n) => n.nodeId === task.id) ?? false;
+                            return html`
                             <article
                               key=${task.id}
                               className=${`task-card${task.isBlockedByLinks ? " blocked" : ""}`}
@@ -115,6 +117,7 @@ export function BoardView({ taskboard, filters, onFilterChange, onAddTask, onTas
                               onClick=${() => onTaskClick(task.id)}
                               title=${story.title}
                             >
+                              ${hasNotif ? html`<div className="notif-dot" aria-label="Unread mention"></div>` : null}
                               <h3>${task.title}</h3>
                               ${task.summary ? html`<p className="task-summary">${task.summary}</p>` : null}
                               <p className="context-line">${epic.title} / ${feature.title}</p>
@@ -138,7 +141,8 @@ export function BoardView({ taskboard, filters, onFilterChange, onAddTask, onTas
                                 </div>
                               ` : null}
                             </article>
-                          `)
+                          `;
+                          })
                         : html`<p className="empty-minor">No tasks</p>`}
                     </div>
                   </section>

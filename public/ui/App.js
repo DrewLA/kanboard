@@ -130,6 +130,7 @@ export function App() {
   const [unlockRefreshing, setUnlockRefreshing] = useState(false);
   const [currentUser, setCurrentUser] = useState(null);
   const [users, setUsers] = useState([]);
+  const [notifications, setNotifications] = useState([]);
   const [pendingOp, setPendingOp] = useState(false);
   const [flashError, setFlashError] = useState(null);
   const [modalError, setModalError] = useState(null);
@@ -209,14 +210,16 @@ export function App() {
         return;
       }
 
-      const [nextTaskboard, nextUser, nextUsers] = await Promise.all([
+      const [nextTaskboard, nextUser, nextUsers, nextNotifications] = await Promise.all([
         request("/api/taskboard"),
         request("/api/users/me").catch(() => null),
-        request("/api/users").catch(() => [])
+        request("/api/users").catch(() => []),
+        request("/api/notifications").catch(() => [])
       ]);
       setTaskboard(nextTaskboard);
       setCurrentUser(nextUser);
       setUsers(nextUsers || []);
+      setNotifications(nextNotifications || []);
       setExpanded((prev) => {
         if (prev.size) return prev;
         const seed = new Set();
@@ -520,6 +523,13 @@ export function App() {
     }
   }
 
+  async function readNodeNotifications(nodeId) {
+    try {
+      await request("/api/notifications/read-node", { method: "POST", body: JSON.stringify({ nodeId }) });
+      setNotifications((prev) => prev.filter((n) => n.nodeId !== nodeId));
+    } catch {}
+  }
+
   function navigateTo(view) {
     setActiveView(view);
     window.location.hash = `/${view}`;
@@ -624,6 +634,8 @@ export function App() {
           onAddEpic=${() => openModal("create-epic", "Create Epic")}
           onAddFeature=${() => openModal("create-feature", "Create Feature")}
           usersMap=${usersMap}
+          notifications=${notifications}
+          currentUserId=${currentUser?.id || null}
         />
       ` : null}
 
@@ -658,6 +670,8 @@ export function App() {
           onSaveValues=${saveFrameValues}
           usersMap=${usersMap}
           currentUser=${currentUser}
+          notifications=${notifications}
+          onReadNode=${readNodeNotifications}
         />
       ` : null}
 

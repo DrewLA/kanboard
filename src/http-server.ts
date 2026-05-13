@@ -55,9 +55,11 @@ import {
   getWorkLink,
   listEpics,
   listFeatures,
+  listNotifications,
   listTasks,
   listUserStories,
   listWorkLinks,
+  readNodeNotifications,
   resolveNode,
   updateBoardBrief,
   updateEpic,
@@ -75,6 +77,10 @@ function parseBody<T>(schema: { parse: (value: unknown) => T }, body: unknown): 
 
 const unlockIdentityInputSchema = z.object({
   password: z.string().min(1, "Password is required.")
+});
+
+const readNodeNotificationsInputSchema = z.object({
+  nodeId: z.string().min(1)
 });
 
 type McpSessionRuntime = {
@@ -412,6 +418,19 @@ async function buildServer(config: AppConfig): Promise<FastifyInstance> {
   app.put("/api/board-brief", async (request) => updateBoardBrief(repository, parseBody(boardBriefPatchSchema, request.body)));
   app.get("/api/metadata", async () => getBoardBrief(repository));
   app.put("/api/metadata", async (request) => updateBoardBrief(repository, parseBody(boardBriefPatchSchema, request.body)));
+
+  app.get("/api/notifications", async () => {
+    const currentUser = await repository.getCurrentUser?.();
+    if (!currentUser?.id) return [];
+    return listNotifications(repository, currentUser.id);
+  });
+
+  app.post("/api/notifications/read-node", async (request) => {
+    const { nodeId } = parseBody(readNodeNotificationsInputSchema, request.body);
+    const currentUser = await repository.getCurrentUser?.();
+    if (currentUser?.id) await readNodeNotifications(repository, currentUser.id, nodeId);
+    return { ok: true };
+  });
 
   app.post("/api/comments", async (request) => createNodeComment(repository, parseBody(createNodeCommentInputSchema, request.body)));
   app.get("/api/comments/:commentId", async (request) => getNodeComment(repository, (request.params as { commentId: string }).commentId));

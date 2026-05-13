@@ -194,6 +194,20 @@ export interface NodeComment {
   updatedAt: string;
 }
 
+export type NotificationSourceType = "comment" | "field";
+
+export interface Notification {
+  id: string;
+  recipientId: string;
+  nodeType: BoardNodeType;
+  nodeId: string;
+  mentionedBy?: string;
+  sourceType: NotificationSourceType;
+  sourceId: string;
+  excerpt: string;
+  createdAt: string;
+}
+
 export interface RecentMutation {
   revision: number;
   scopes: string[];

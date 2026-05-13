@@ -6,6 +6,7 @@ import {
   Epic,
   Feature,
   NodeComment,
+  Notification,
   Task,
   TaskboardDocument,
   UserStory,
@@ -24,7 +25,8 @@ export const tableNames = [
   "tasks",
   "comments",
   "links",
-  "indexes"
+  "indexes",
+  "notifications"
 ] as const;
 
 export type TableName = (typeof tableNames)[number];
@@ -77,6 +79,7 @@ export type TableValueMap = {
   comments: CommentRecord;
   links: WorkLink;
   indexes: IndexesRecord;
+  notifications: Notification;
 };
 
 export type VersionedRecord<T> = {
@@ -144,7 +147,8 @@ export function createEmptyStatePackage(): StatePackage {
       tasks: createEmptyTable<Task>(),
       comments: createEmptyTable<CommentRecord>(),
       links: createEmptyTable<WorkLink>(),
-      indexes: createEmptyTable<IndexesRecord>()
+      indexes: createEmptyTable<IndexesRecord>(),
+      notifications: createEmptyTable<Notification>()
     }
   };
 }
@@ -191,7 +195,8 @@ export function normalizeStatePackage(value: unknown): StatePackage {
       tasks: normalizeTable<Task>(source.tables?.tasks ?? empty.tables.tasks),
       comments: normalizeTable<CommentRecord>(source.tables?.comments ?? empty.tables.comments),
       links: normalizeTable<WorkLink>(source.tables?.links ?? empty.tables.links),
-      indexes: normalizeTable<IndexesRecord>(source.tables?.indexes ?? empty.tables.indexes)
+      indexes: normalizeTable<IndexesRecord>(source.tables?.indexes ?? empty.tables.indexes),
+      notifications: normalizeTable<Notification>(source.tables?.notifications ?? empty.tables.notifications)
     }
   };
 }
@@ -274,7 +279,8 @@ export function documentToTableValues(document: TaskboardDocument): {
     tasks: Object.fromEntries(Object.values(document.tasks).map((task) => [task.id, stripComments(task)])),
     comments,
     links: Object.fromEntries(Object.values(document.links).map((link) => [link.id, link])),
-    indexes: { [mainId]: buildIndexes(document) }
+    indexes: { [mainId]: buildIndexes(document) },
+    notifications: {}
   };
 }
 
@@ -355,7 +361,7 @@ export function diffDocuments(baseline: TaskboardDocument, next: TaskboardDocume
   const changedTables = new Set<TableName>();
 
   for (const table of tableNames) {
-    if (table === "metadata" || table === "users") {
+    if (table === "metadata" || table === "users" || table === "notifications") {
       continue;
     }
 

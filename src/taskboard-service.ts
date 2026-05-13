@@ -13,6 +13,8 @@ import {
   FindNodesInput,
   Feature,
   NodeComment,
+  Notification,
+  NotificationSourceType,
   ResolveNodeInput,
   Task,
   TaskboardDocument,
@@ -33,6 +35,7 @@ import {
   toSnapshot
 } from "./model";
 import { TaskboardRepository } from "./repository";
+import { UserRecord } from "./state-package";
 
 let writeQueue: Promise<void> = Promise.resolve();
 let activeMutationEditor: string | undefined;
@@ -306,6 +309,49 @@ function requireWorkLink(document: TaskboardDocument, linkId: string): WorkLink 
     throw new NotFoundError(`Link ${linkId} was not found.`);
   }
   return link;
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function extractMentionedUserIds(text: string, users: UserRecord[]): string[] {
+  const sorted = [...users].sort((a, b) => b.name.length - a.name.length);
+  const ids = new Set<string>();
+  for (const user of sorted) {
+    const pattern = new RegExp(`@${escapeRegex(user.name)}(?=\\s|$|[^\\w])`, "gi");
+    if (pattern.test(text)) ids.add(user.id);
+  }
+  return [...ids];
+}
+
+async function notifyMentions(
+  repository: TaskboardRepository,
+  nodeType: BoardNodeType,
+  nodeId: string,
+  sourceId: string,
+  sourceType: NotificationSourceType,
+  text: string,
+  actorId: string | undefined
+): Promise<void> {
+  if (!repository.listUsers || !repository.createNotifications || !repository.deleteNotificationsBySource) return;
+  const users = await repository.listUsers();
+  const recipientIds = extractMentionedUserIds(text, users).filter((id) => id !== actorId);
+  await repository.deleteNotificationsBySource(sourceId);
+  if (!recipientIds.length) return;
+  const timestamp = nowIso();
+  const notifications: Notification[] = recipientIds.map((recipientId) => ({
+    id: createId("notif"),
+    recipientId,
+    nodeType,
+    nodeId,
+    mentionedBy: actorId,
+    sourceType,
+    sourceId,
+    excerpt: text.slice(0, 200),
+    createdAt: timestamp
+  }));
+  await repository.createNotifications(notifications);
 }
 
 function requireWorkItem(document: TaskboardDocument, itemType: WorkItemType, itemId: string): Feature | Task {
@@ -820,8 +866,10 @@ export async function getNodeComment(repository: TaskboardRepository, commentId:
 }
 
 export async function createNodeComment(repository: TaskboardRepository, input: CreateNodeCommentInput): Promise<NodeComment> {
-  return mutateDocument(repository, (document) => {
+  let resolvedNodeId: string | undefined;
+  const comment = await mutateDocument(repository, (document) => {
     const node = requireBoardNodeReference(document, input.nodeType, input.nodeId, input.nodeAlias);
+    resolvedNodeId = node.id;
     const timestamp = nowIso();
     const comment: NodeComment = {
       id: createId("comment"),
@@ -843,6 +891,12 @@ export async function createNodeComment(repository: TaskboardRepository, input: 
       }
     };
   });
+
+  if (resolvedNodeId) {
+    const actor = await repository.getCurrentUser?.();
+    void notifyMentions(repository, input.nodeType, resolvedNodeId, `comment:${comment.id}`, "comment", comment.body, actor?.id).catch(() => {});
+  }
+  return comment;
 }
 
 export async function updateNodeComment(
@@ -850,8 +904,12 @@ export async function updateNodeComment(
   commentId: string,
   patch: UpdateNodeCommentInput
 ): Promise<NodeComment> {
-  return mutateDocument(repository, (document) => {
+  let resolvedNodeType: BoardNodeType | undefined;
+  let resolvedNodeId: string | undefined;
+  const comment = await mutateDocument(repository, (document) => {
     const existing = requireNodeComment(document, commentId);
+    resolvedNodeType = existing.nodeType;
+    resolvedNodeId = existing.node.id;
     const updatedAt = nowIso();
     const nextComment: NodeComment = {
       ...existing.comment,
@@ -872,6 +930,12 @@ export async function updateNodeComment(
       }
     };
   });
+
+  if (resolvedNodeType && resolvedNodeId) {
+    const actor = await repository.getCurrentUser?.();
+    void notifyMentions(repository, resolvedNodeType, resolvedNodeId, `comment:${commentId}`, "comment", comment.body, actor?.id).catch(() => {});
+  }
+  return comment;
 }
 
 export async function deleteNodeComment(
@@ -1217,7 +1281,7 @@ export async function createTask(
   repository: TaskboardRepository,
   input: CreateTaskInput
 ): Promise<Task> {
-  return mutateDocument(repository, (document) => {
+  const task = await mutateDocument(repository, (document) => {
     const story = requireStoryReference(document, input.storyId, input.storyAlias);
     const timestamp = nowIso();
     const taskId = createId("task");
@@ -1253,6 +1317,13 @@ export async function createTask(
       }
     };
   });
+
+  const textFields = [task.title, task.summary, task.implementationNotes].filter(Boolean).join(" ");
+  if (textFields) {
+    const actor = await repository.getCurrentUser?.();
+    void notifyMentions(repository, "task", task.id, `field:${task.id}`, "field", textFields, actor?.id).catch(() => {});
+  }
+  return task;
 }
 
 export async function updateTask(
@@ -1260,7 +1331,7 @@ export async function updateTask(
   taskId: string,
   patch: UpdateTaskInput
 ): Promise<Task> {
-  return mutateDocument(repository, (document) => {
+  const task = await mutateDocument(repository, (document) => {
     const task = requireTask(document, taskId);
     const nextAlias = patch.alias ? buildEntityAlias(document, patch.alias, patch.title ?? task.title, task.id, task.id) : task.alias;
     return {
@@ -1274,6 +1345,13 @@ export async function updateTask(
       }
     };
   });
+
+  if (patch.title !== undefined || patch.summary !== undefined || patch.implementationNotes !== undefined) {
+    const textFields = [task.title, task.summary, task.implementationNotes].filter(Boolean).join(" ");
+    const actor = await repository.getCurrentUser?.();
+    void notifyMentions(repository, "task", taskId, `field:${taskId}`, "field", textFields, actor?.id).catch(() => {});
+  }
+  return task;
 }
 
 export async function deleteTask(
@@ -1424,4 +1502,12 @@ export async function deleteWorkLink(
       }
     };
   });
+}
+
+export async function listNotifications(repository: TaskboardRepository, userId: string): Promise<Notification[]> {
+  return repository.listNotifications?.(userId) ?? [];
+}
+
+export async function readNodeNotifications(repository: TaskboardRepository, userId: string, nodeId: string): Promise<void> {
+  await repository.readNodeNotifications?.(userId, nodeId);
 }

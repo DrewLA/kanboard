@@ -367,9 +367,16 @@ function CommentsPane({ taskId, comments, currentUser, usersMap, onMentionInput 
 
 // ---- FormModal ----
 
-export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit, submitting = false, submitError = null, taskboard, activeFilters, lookup, onSwitchModal, onSaveValues, usersMap, currentUser }) {
+export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit, submitting = false, submitError = null, taskboard, activeFilters, lookup, onSwitchModal, onSaveValues, usersMap, currentUser, onReadNode }) {
   const formRef = useRef(null);
   const [commentsOpen, setCommentsOpen] = useState(false);
+
+  const isEditTaskModal = Boolean(modal?.type === "edit-task" && modal?.entity?.id);
+  const taskModalId = isEditTaskModal ? modal.entity.id : undefined;
+
+  useEffect(() => {
+    if (taskModalId && onReadNode) onReadNode(taskModalId);
+  }, []);
 
   const users = Object.values(usersMap || {}).sort((a, b) => a.name.localeCompare(b.name));
   const { mentionState, filtered, handleInput, selectUser, closeMention } = useMentions(users);

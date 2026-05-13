@@ -7,7 +7,7 @@ import { Redis } from "@upstash/redis";
 import { AppConfig, assertRedisConfig } from "./config";
 import { deriveAddress, signMutationEnvelope, verifyMutationEnvelope } from "./identity";
 import { decryptPrivateKey, fileExists, readIdentityFile } from "./identity-store";
-import { BoardNodeType, WorkItemType, createEmptyTaskboardDocument, normalizeTaskboardDocument, TaskboardDocument, nowIso } from "./model";
+import { BoardNodeType, Notification, WorkItemType, createEmptyTaskboardDocument, normalizeTaskboardDocument, TaskboardDocument, nowIso } from "./model";
 import {
   PackageDiff,
   RecordRef,
@@ -105,6 +105,11 @@ export interface TaskboardRepository {
   getCurrentUser?(): Promise<UserRecord | null>;
   getIdentityStatus?(): Promise<IdentityStatus>;
   unlockIdentity?(password: string): Promise<IdentityStatus>;
+  listNotifications?(userId: string): Promise<Notification[]>;
+  createNotifications?(notifications: Notification[]): Promise<void>;
+  deleteNotificationsBySource?(sourceId: string): Promise<void>;
+  deleteNodeNotifications?(nodeId: string): Promise<void>;
+  readNodeNotifications?(userId: string, nodeId: string): Promise<void>;
 }
 
 function delay(milliseconds: number): Promise<void> {
@@ -576,6 +581,66 @@ class ModularTaskboardRepository implements TaskboardRepository {
     }
 
     return statePackage.tables.users.rows.private?.value ?? null;
+  }
+
+  async listNotifications(userId: string): Promise<Notification[]> {
+    const pkg = await this.primary.loadPackage();
+    return Object.values(pkg.tables.notifications.rows)
+      .map((row) => row.value)
+      .filter((n) => n.recipientId === userId)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  async createNotifications(notifications: Notification[]): Promise<void> {
+    if (!notifications.length) return;
+    const pkg = await this.primary.loadPackage();
+    const next = cloneStatePackage(pkg);
+    const timestamp = nowIso();
+    for (const n of notifications) {
+      next.tables.notifications.rows[n.id] = { version: 1, value: n };
+      next.tables.notifications.version += 1;
+    }
+    next.tables.notifications.updatedAt = timestamp;
+    await this.primary.commitPackage(next, [], new Set(["notifications"]));
+  }
+
+  async deleteNotificationsBySource(sourceId: string): Promise<void> {
+    const pkg = await this.primary.loadPackage();
+    const ids = Object.entries(pkg.tables.notifications.rows)
+      .filter(([, row]) => row.value.sourceId === sourceId)
+      .map(([id]) => id);
+    if (!ids.length) return;
+    const next = cloneStatePackage(pkg);
+    for (const id of ids) delete next.tables.notifications.rows[id];
+    next.tables.notifications.version += 1;
+    next.tables.notifications.updatedAt = nowIso();
+    await this.primary.commitPackage(next, [], new Set(["notifications"]));
+  }
+
+  async deleteNodeNotifications(nodeId: string): Promise<void> {
+    const pkg = await this.primary.loadPackage();
+    const ids = Object.entries(pkg.tables.notifications.rows)
+      .filter(([, row]) => row.value.nodeId === nodeId)
+      .map(([id]) => id);
+    if (!ids.length) return;
+    const next = cloneStatePackage(pkg);
+    for (const id of ids) delete next.tables.notifications.rows[id];
+    next.tables.notifications.version += 1;
+    next.tables.notifications.updatedAt = nowIso();
+    await this.primary.commitPackage(next, [], new Set(["notifications"]));
+  }
+
+  async readNodeNotifications(userId: string, nodeId: string): Promise<void> {
+    const pkg = await this.primary.loadPackage();
+    const ids = Object.entries(pkg.tables.notifications.rows)
+      .filter(([, row]) => row.value.recipientId === userId && row.value.nodeId === nodeId)
+      .map(([id]) => id);
+    if (!ids.length) return;
+    const next = cloneStatePackage(pkg);
+    for (const id of ids) delete next.tables.notifications.rows[id];
+    next.tables.notifications.version += 1;
+    next.tables.notifications.updatedAt = nowIso();
+    await this.primary.commitPackage(next, [], new Set(["notifications"]));
   }
 
   async getIdentityStatus(): Promise<IdentityStatus> {
