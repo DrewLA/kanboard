@@ -26,7 +26,7 @@ function UserChip({ user }) {
   `;
 }
 
-export function Header({ productName, health, activeView, onViewChange, onRefresh, refreshing, onToggleAgents, agentsOpen, agentCount, currentUser }) {
+export function Header({ productName, health, activeView, onViewChange, onRefresh, refreshing, onToggleAgents, agentsOpen, agentCount, currentUser, notificationCount = 0, onToggleRecycle, recycleOpen }) {
   return html`
     <header className="topbar glass-panel">
       <div className="brand-cluster">
@@ -47,6 +47,12 @@ export function Header({ productName, health, activeView, onViewChange, onRefres
         )}
       </nav>
       <div className="status-cluster">
+        ${notificationCount > 0 ? html`
+          <div className="header-notif-pill" title=${`${notificationCount} unread mention${notificationCount === 1 ? "" : "s"}`}>
+            <span>@mentions</span>
+            <span className="header-notif-pill-count">${notificationCount}</span>
+          </div>
+        ` : null}
         <${UserChip} user=${currentUser} />
         <button
           className=${`refresh-btn${refreshing ? " refresh-btn--loading" : ""}`}
@@ -60,6 +66,22 @@ export function Header({ productName, health, activeView, onViewChange, onRefres
             <path d="M21 3v5h-5"/>
             <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
             <path d="M8 16H3v5"/>
+          </svg>
+        </button>
+        <button
+          className=${`recycle-btn${recycleOpen ? " recycle-btn--open" : ""}`}
+          onClick=${onToggleRecycle}
+          aria-label="Toggle recycle bin"
+          aria-expanded=${recycleOpen}
+          title="Recycle bin"
+          type="button"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="3 6 5 6 21 6"/>
+            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+            <path d="M10 11v6"/>
+            <path d="M14 11v6"/>
+            <path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/>
           </svg>
         </button>
         <button

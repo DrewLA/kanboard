@@ -9,6 +9,7 @@ import { BacklogView } from "./BacklogView.js";
 import { BoardBriefView } from "./BoardBriefView.js";
 import { FormModal } from "./Modal.js";
 import { AgentsPane } from "./AgentsPane.js";
+import { RecycleBinPane } from "./RecycleBinPane.js";
 
 const html = htm.bind(React.createElement);
 
@@ -124,6 +125,7 @@ export function App() {
   const [modalStack, setModalStack] = useState([]);
   const [confirmState, setConfirmState] = useState(null);
   const [agentsOpen, setAgentsOpen] = useState(false);
+  const [recycleOpen, setRecycleOpen] = useState(false);
   const [unlockPassword, setUnlockPassword] = useState("");
   const [unlockError, setUnlockError] = useState("");
   const [unlocking, setUnlocking] = useState(false);
@@ -170,6 +172,7 @@ export function App() {
   }, [users]);
 
   const lookup = useMemo(() => {
+    const epics = taskboard?.epics || [];
     const allContexts = getTaskContexts(taskboard);
     return {
       findEpic: (id) => epics.find((e) => e.id === id) || null,
@@ -590,6 +593,9 @@ export function App() {
           agentsOpen=${agentsOpen}
           agentCount=${agentCount}
           currentUser=${currentUser}
+          notificationCount=${notifications?.length || 0}
+          onToggleRecycle=${() => setRecycleOpen((v) => !v)}
+          recycleOpen=${recycleOpen}
         />
         ${activeView === "board" ? html`<${SkeletonBoard} />` : null}
         ${activeView === "backlog" ? html`<${SkeletonBacklog} />` : null}
@@ -621,6 +627,9 @@ export function App() {
         agentsOpen=${agentsOpen}
         agentCount=${agentCount}
         currentUser=${currentUser}
+        notificationCount=${notifications?.length || 0}
+        onToggleRecycle=${() => setRecycleOpen((v) => !v)}
+        recycleOpen=${recycleOpen}
       />
 
       ${activeView === "board" ? html`
@@ -672,6 +681,7 @@ export function App() {
           currentUser=${currentUser}
           notifications=${notifications}
           onReadNode=${readNodeNotifications}
+          onReload=${reload}
         />
       ` : null}
 
@@ -729,6 +739,14 @@ export function App() {
         onClose=${() => setAgentsOpen(false)}
         health=${health}
         agents=${agents}
+      />
+
+      <${RecycleBinPane}
+        open=${recycleOpen}
+        onClose=${() => setRecycleOpen(false)}
+        usersMap=${usersMap}
+        onChanged=${() => reload().catch(() => {})}
+        onConfirm=${showConfirm}
       />
     </main>
   `;

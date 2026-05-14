@@ -58,7 +58,7 @@ export function BoardView({ taskboard, filters, onFilterChange, onAddTask, onTas
   });
 
   return html`
-    <section className="view-shell">
+    <section className="view-shell view-shell--board">
       <div className="panel-toolbar glass-panel">
         <${CustomSelect}
           value=${filters.epicId}
@@ -98,11 +98,11 @@ export function BoardView({ taskboard, filters, onFilterChange, onAddTask, onTas
                     >
                       ${items.length
                         ? items.map(({ epic, feature, story, task }) => {
-                            const hasNotif = notifications?.some((n) => n.nodeId === task.id) ?? false;
+                            const notifCount = notifications?.filter((n) => n.nodeId === task.id).length || 0;
                             return html`
                             <article
                               key=${task.id}
-                              className=${`task-card${task.isBlockedByLinks ? " blocked" : ""}`}
+                              className=${`task-card${task.isBlockedByLinks ? " blocked" : ""}${notifCount > 0 ? " task-card--has-notif" : ""}`}
                               draggable="true"
                               onDragStart=${(e) => {
                                 e.currentTarget.closest(".kanban-grid").querySelectorAll(".kanban-cards").forEach((lane) => {
@@ -117,7 +117,7 @@ export function BoardView({ taskboard, filters, onFilterChange, onAddTask, onTas
                               onClick=${() => onTaskClick(task.id)}
                               title=${story.title}
                             >
-                              ${hasNotif ? html`<div className="notif-dot" aria-label="Unread mention"></div>` : null}
+                              ${notifCount > 0 ? html`<div className="notif-badge" aria-label=${`${notifCount} unread mention${notifCount === 1 ? "" : "s"}`}>@${notifCount}</div>` : null}
                               <h3>${task.title}</h3>
                               ${task.summary ? html`<p className="task-summary">${task.summary}</p>` : null}
                               <p className="context-line">${epic.title} / ${feature.title}</p>

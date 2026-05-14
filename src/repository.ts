@@ -7,7 +7,7 @@ import { Redis } from "@upstash/redis";
 import { AppConfig, assertRedisConfig } from "./config";
 import { deriveAddress, signMutationEnvelope, verifyMutationEnvelope } from "./identity";
 import { decryptPrivateKey, fileExists, readIdentityFile } from "./identity-store";
-import { BoardNodeType, Notification, WorkItemType, createEmptyTaskboardDocument, normalizeTaskboardDocument, TaskboardDocument, nowIso } from "./model";
+import { BoardNodeType, Notification, RecycleBinEntry, WorkItemType, createEmptyTaskboardDocument, normalizeTaskboardDocument, TaskboardDocument, nowIso } from "./model";
 import {
   PackageDiff,
   RecordRef,
@@ -110,6 +110,10 @@ export interface TaskboardRepository {
   deleteNotificationsBySource?(sourceId: string): Promise<void>;
   deleteNodeNotifications?(nodeId: string): Promise<void>;
   readNodeNotifications?(userId: string, nodeId: string): Promise<void>;
+  listRecycleBin?(): Promise<RecycleBinEntry[]>;
+  addToRecycleBin?(entries: RecycleBinEntry[]): Promise<void>;
+  removeFromRecycleBin?(entryIds: string[]): Promise<void>;
+  emptyRecycleBin?(): Promise<void>;
 }
 
 function delay(milliseconds: number): Promise<void> {
@@ -641,6 +645,53 @@ class ModularTaskboardRepository implements TaskboardRepository {
     next.tables.notifications.version += 1;
     next.tables.notifications.updatedAt = nowIso();
     await this.primary.commitPackage(next, [], new Set(["notifications"]));
+  }
+
+  async listRecycleBin(): Promise<RecycleBinEntry[]> {
+    const pkg = await this.primary.loadPackage();
+    return Object.values(pkg.tables.recycleBin.rows)
+      .map((row) => row.value)
+      .sort((a, b) => b.deletedAt.localeCompare(a.deletedAt));
+  }
+
+  async addToRecycleBin(entries: RecycleBinEntry[]): Promise<void> {
+    if (!entries.length) return;
+    const pkg = await this.primary.loadPackage();
+    const next = cloneStatePackage(pkg);
+    const timestamp = nowIso();
+    for (const entry of entries) {
+      next.tables.recycleBin.rows[entry.id] = { version: 1, value: entry };
+      next.tables.recycleBin.version += 1;
+    }
+    next.tables.recycleBin.updatedAt = timestamp;
+    await this.primary.commitPackage(next, [], new Set(["recycleBin"]));
+  }
+
+  async removeFromRecycleBin(entryIds: string[]): Promise<void> {
+    if (!entryIds.length) return;
+    const pkg = await this.primary.loadPackage();
+    const next = cloneStatePackage(pkg);
+    let touched = false;
+    for (const id of entryIds) {
+      if (next.tables.recycleBin.rows[id]) {
+        delete next.tables.recycleBin.rows[id];
+        touched = true;
+      }
+    }
+    if (!touched) return;
+    next.tables.recycleBin.version += 1;
+    next.tables.recycleBin.updatedAt = nowIso();
+    await this.primary.commitPackage(next, [], new Set(["recycleBin"]));
+  }
+
+  async emptyRecycleBin(): Promise<void> {
+    const pkg = await this.primary.loadPackage();
+    if (!Object.keys(pkg.tables.recycleBin.rows).length) return;
+    const next = cloneStatePackage(pkg);
+    next.tables.recycleBin.rows = {};
+    next.tables.recycleBin.version += 1;
+    next.tables.recycleBin.updatedAt = nowIso();
+    await this.primary.commitPackage(next, [], new Set(["recycleBin"]));
   }
 
   async getIdentityStatus(): Promise<IdentityStatus> {

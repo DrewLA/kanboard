@@ -269,14 +269,39 @@ function commentInitial(displayName) {
   return (displayName || "?")[0].toUpperCase();
 }
 
-function CommentsPane({ taskId, comments, currentUser, usersMap, onMentionInput }) {
+function CommentsPane({ taskId, comments, currentUser, usersMap, onMentionInput, onCommentDeleted, onClose }) {
   const [body, setBody] = useState("");
   const [posting, setPosting] = useState(false);
   const [pending, setPending] = useState([]);
+  const [deletingIds, setDeletingIds] = useState(new Set());
+  const [removedIds, setRemovedIds] = useState(new Set());
+  const [confirmingId, setConfirmingId] = useState(null);
   const listEndRef = useRef(null);
 
   const confirmedIds = new Set((comments || []).map((c) => c.id));
-  const merged = [...(comments || []), ...pending.filter((p) => !confirmedIds.has(p.id))];
+  const merged = [...(comments || []), ...pending.filter((p) => !confirmedIds.has(p.id))]
+    .filter((c) => !removedIds.has(c.id));
+
+  async function deleteComment(commentId) {
+    if (!commentId || commentId.startsWith("temp_")) return;
+    if (confirmingId !== commentId) {
+      setConfirmingId(commentId);
+      return;
+    }
+    setConfirmingId(null);
+    setDeletingIds((s) => new Set([...s, commentId]));
+    try {
+      await request(`/api/comments/${commentId}`, { method: "DELETE", body: JSON.stringify({}) });
+      setRemovedIds((s) => new Set([...s, commentId]));
+      onCommentDeleted?.();
+    } catch {
+      setDeletingIds((s) => {
+        const next = new Set(s);
+        next.delete(commentId);
+        return next;
+      });
+    }
+  }
 
   function scrollToEnd() {
     setTimeout(() => listEndRef.current?.scrollIntoView({ behavior: "smooth" }), 40);
@@ -324,21 +349,38 @@ function CommentsPane({ taskId, comments, currentUser, usersMap, onMentionInput 
       <div className="comments-pane-header">
         <span className="comments-pane-title">Comments</span>
         ${merged.length > 0 ? html`<span className="comments-count-pill">${merged.length}</span>` : null}
+        ${onClose ? html`<button className="comment-pane-close" type="button" aria-label="Close comments" onClick=${onClose}>✕</button>` : null}
       </div>
       <div className="comments-list">
         ${merged.length === 0
           ? html`<p className="comments-empty">No comments yet.</p>`
           : merged.map((c) => {
               const displayName = resolveAuthor(c.author, usersMap);
+              const isPending = c.id?.startsWith?.("temp_");
+              const isDeleting = deletingIds.has(c.id);
+              const isConfirming = confirmingId === c.id;
               return html`
-                <div key=${c.id} className="comment-bubble">
+                <div key=${c.id} className=${`comment-bubble${isDeleting ? " comment-bubble--deleting" : ""}`}>
                   <div className="comment-bubble-meta">
                     <span className="comment-avatar">${commentInitial(displayName)}</span>
                     <span className="comment-author">${displayName}</span>
-                    <span className="comment-time">${formatRelativeTime(c.createdAt) || "just now"}</span>
                     ${c.kind && c.kind !== "note" ? html`<span className=${`comment-kind comment-kind--${c.kind}`}>${c.kind}</span>` : null}
+                    ${!isPending ? html`
+                      <button
+                        className=${`comment-delete-btn${isConfirming ? " comment-delete-btn--confirming" : ""}`}
+                        type="button"
+                        title=${isConfirming ? "Click again to confirm delete" : "Delete comment"}
+                        aria-label="Delete comment"
+                        disabled=${isDeleting}
+                        onClick=${() => deleteComment(c.id)}
+                        onBlur=${() => { if (confirmingId === c.id) setConfirmingId(null); }}
+                      >${isConfirming ? "Sure?" : "✕"}</button>
+                    ` : null}
                   </div>
                   <p className="comment-body">${c.body}</p>
+                  <div className="comment-bubble-foot">
+                    <span className="comment-time">${formatRelativeTime(c.createdAt) || "just now"}</span>
+                  </div>
                 </div>
               `;
             })}
@@ -367,7 +409,7 @@ function CommentsPane({ taskId, comments, currentUser, usersMap, onMentionInput 
 
 // ---- FormModal ----
 
-export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit, submitting = false, submitError = null, taskboard, activeFilters, lookup, onSwitchModal, onSaveValues, usersMap, currentUser, onReadNode }) {
+export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit, submitting = false, submitError = null, taskboard, activeFilters, lookup, onSwitchModal, onSaveValues, usersMap, currentUser, onReadNode, onReload }) {
   const formRef = useRef(null);
   const [commentsOpen, setCommentsOpen] = useState(false);
 
@@ -375,8 +417,8 @@ export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit
   const taskModalId = isEditTaskModal ? modal.entity.id : undefined;
 
   useEffect(() => {
-    if (taskModalId && onReadNode) onReadNode(taskModalId);
-  }, []);
+    if (commentsOpen && taskModalId && onReadNode) onReadNode(taskModalId);
+  }, [commentsOpen, taskModalId]);
 
   const users = Object.values(usersMap || {}).sort((a, b) => a.name.localeCompare(b.name));
   const { mentionState, filtered, handleInput, selectUser, closeMention } = useMentions(users);
@@ -462,6 +504,8 @@ export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit
             currentUser=${currentUser}
             usersMap=${usersMap}
             onMentionInput=${handleInput}
+            onCommentDeleted=${onReload}
+            onClose=${() => setCommentsOpen(false)}
           />
         ` : null}
       </div>

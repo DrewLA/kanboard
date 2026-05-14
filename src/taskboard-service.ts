@@ -15,6 +15,8 @@ import {
   NodeComment,
   Notification,
   NotificationSourceType,
+  RecycleBinEntry,
+  RecycleBinEntryType,
   ResolveNodeInput,
   Task,
   TaskboardDocument,
@@ -323,6 +325,98 @@ function extractMentionedUserIds(text: string, users: UserRecord[]): string[] {
     if (pattern.test(text)) ids.add(user.id);
   }
   return [...ids];
+}
+
+async function pushToRecycleBin(
+  repository: TaskboardRepository,
+  entry: RecycleBinEntry
+): Promise<void> {
+  if (!repository.addToRecycleBin) return;
+  await repository.addToRecycleBin([entry]);
+}
+
+function buildRecycleEntry(
+  entityType: RecycleBinEntryType,
+  entityId: string,
+  title: string,
+  payload: unknown,
+  parentContext: RecycleBinEntry["parentContext"],
+  actorId: string | undefined
+): RecycleBinEntry {
+  return {
+    id: createId("bin"),
+    entityType,
+    entityId,
+    title,
+    payload,
+    parentContext,
+    deletedAt: nowIso(),
+    deletedBy: actorId
+  };
+}
+
+function cloneDeep<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+interface StorySubtreeSnapshot {
+  tasks: Task[];
+}
+
+interface FeatureSubtreeSnapshot {
+  stories: UserStory[];
+  tasks: Task[];
+}
+
+interface EpicSubtreeSnapshot {
+  features: Feature[];
+  stories: UserStory[];
+  tasks: Task[];
+}
+
+function snapshotStorySubtree(document: TaskboardDocument, story: UserStory): StorySubtreeSnapshot {
+  const tasks: Task[] = [];
+  for (const taskId of story.taskIds) {
+    const task = document.tasks[taskId];
+    if (task) tasks.push(cloneDeep(task));
+  }
+  return { tasks };
+}
+
+function snapshotFeatureSubtree(document: TaskboardDocument, feature: Feature): FeatureSubtreeSnapshot {
+  const stories: UserStory[] = [];
+  const tasks: Task[] = [];
+  for (const storyId of feature.storyIds) {
+    const story = document.userStories[storyId];
+    if (!story) continue;
+    stories.push(cloneDeep(story));
+    for (const taskId of story.taskIds) {
+      const task = document.tasks[taskId];
+      if (task) tasks.push(cloneDeep(task));
+    }
+  }
+  return { stories, tasks };
+}
+
+function snapshotEpicSubtree(document: TaskboardDocument, epic: Epic): EpicSubtreeSnapshot {
+  const features: Feature[] = [];
+  const stories: UserStory[] = [];
+  const tasks: Task[] = [];
+  for (const featureId of epic.featureIds) {
+    const feature = document.features[featureId];
+    if (!feature) continue;
+    features.push(cloneDeep(feature));
+    for (const storyId of feature.storyIds) {
+      const story = document.userStories[storyId];
+      if (!story) continue;
+      stories.push(cloneDeep(story));
+      for (const taskId of story.taskIds) {
+        const task = document.tasks[taskId];
+        if (task) tasks.push(cloneDeep(task));
+      }
+    }
+  }
+  return { features, stories, tasks };
 }
 
 async function notifyMentions(
@@ -942,8 +1036,15 @@ export async function deleteNodeComment(
   repository: TaskboardRepository,
   commentId: string
 ): Promise<{ deletedId: string }> {
-  return mutateDocument(repository, (document) => {
+  let snapshot: { comment: NodeComment; nodeType: BoardNodeType; nodeId: string } | undefined;
+
+  const result = await mutateDocument(repository, (document) => {
     const existing = requireNodeComment(document, commentId);
+    snapshot = {
+      comment: { ...existing.comment },
+      nodeType: existing.nodeType,
+      nodeId: existing.node.id
+    };
     const timestamp = nowIso();
     return {
       scopes: [commentScope(commentId)],
@@ -956,6 +1057,24 @@ export async function deleteNodeComment(
       }
     };
   });
+
+  if (snapshot) {
+    const actor = await repository.getCurrentUser?.();
+    const titleSnippet = snapshot.comment.body.length > 60
+      ? `${snapshot.comment.body.slice(0, 57)}…`
+      : snapshot.comment.body;
+    const entry = buildRecycleEntry(
+      "comment",
+      commentId,
+      titleSnippet || "(empty comment)",
+      { primary: snapshot.comment },
+      { type: snapshot.nodeType, id: snapshot.nodeId },
+      actor?.id
+    );
+    await pushToRecycleBin(repository, entry).catch(() => {});
+  }
+
+  return result;
 }
 
 export async function updateBoardBrief(
@@ -1061,8 +1180,14 @@ export async function deleteEpic(
   repository: TaskboardRepository,
   epicId: string
 ): Promise<{ deletedId: string }> {
-  return mutateDocument(repository, (document) => {
+  let snapshot: { epic: Epic; subtree: EpicSubtreeSnapshot } | undefined;
+
+  const result = await mutateDocument(repository, (document) => {
     const epic = requireEpic(document, epicId);
+    snapshot = {
+      epic: cloneDeep(epic),
+      subtree: snapshotEpicSubtree(document, epic)
+    };
     return {
       scopes: collectEpicDeletionScopes(document, epicId),
       summary: `Deleted epic ${epic.title}.`,
@@ -1072,6 +1197,26 @@ export async function deleteEpic(
       }
     };
   });
+
+  if (snapshot) {
+    const actor = await repository.getCurrentUser?.();
+    const entry = buildRecycleEntry(
+      "epic",
+      epicId,
+      snapshot.epic.title,
+      {
+        primary: snapshot.epic,
+        features: snapshot.subtree.features,
+        stories: snapshot.subtree.stories,
+        tasks: snapshot.subtree.tasks
+      },
+      undefined,
+      actor?.id
+    );
+    await pushToRecycleBin(repository, entry).catch(() => {});
+  }
+
+  return result;
 }
 
 export async function listFeatures(repository: TaskboardRepository, epicId?: string, epicAlias?: string): Promise<Feature[]> {
@@ -1154,8 +1299,15 @@ export async function deleteFeature(
   repository: TaskboardRepository,
   featureId: string
 ): Promise<{ deletedId: string }> {
-  return mutateDocument(repository, (document) => {
+  let snapshot: { feature: Feature; epicId: string; subtree: FeatureSubtreeSnapshot } | undefined;
+
+  const result = await mutateDocument(repository, (document) => {
     const feature = requireFeature(document, featureId);
+    snapshot = {
+      feature: cloneDeep(feature),
+      epicId: feature.epicId,
+      subtree: snapshotFeatureSubtree(document, feature)
+    };
     return {
       scopes: collectFeatureDeletionScopes(document, featureId),
       summary: `Deleted feature ${feature.title}.`,
@@ -1165,6 +1317,21 @@ export async function deleteFeature(
       }
     };
   });
+
+  if (snapshot) {
+    const actor = await repository.getCurrentUser?.();
+    const entry = buildRecycleEntry(
+      "feature",
+      featureId,
+      snapshot.feature.title,
+      { primary: snapshot.feature, stories: snapshot.subtree.stories, tasks: snapshot.subtree.tasks },
+      { type: "epic", id: snapshot.epicId },
+      actor?.id
+    );
+    await pushToRecycleBin(repository, entry).catch(() => {});
+  }
+
+  return result;
 }
 
 export async function listUserStories(repository: TaskboardRepository, featureId?: string, featureAlias?: string): Promise<UserStory[]> {
@@ -1248,8 +1415,15 @@ export async function deleteUserStory(
   repository: TaskboardRepository,
   storyId: string
 ): Promise<{ deletedId: string }> {
-  return mutateDocument(repository, (document) => {
+  let snapshot: { story: UserStory; featureId: string; subtree: StorySubtreeSnapshot } | undefined;
+
+  const result = await mutateDocument(repository, (document) => {
     const story = requireStory(document, storyId);
+    snapshot = {
+      story: cloneDeep(story),
+      featureId: story.featureId,
+      subtree: snapshotStorySubtree(document, story)
+    };
     return {
       scopes: collectStoryDeletionScopes(document, storyId),
       summary: `Deleted story ${story.title}.`,
@@ -1259,6 +1433,21 @@ export async function deleteUserStory(
       }
     };
   });
+
+  if (snapshot) {
+    const actor = await repository.getCurrentUser?.();
+    const entry = buildRecycleEntry(
+      "story",
+      storyId,
+      snapshot.story.title,
+      { primary: snapshot.story, tasks: snapshot.subtree.tasks },
+      { type: "feature", id: snapshot.featureId },
+      actor?.id
+    );
+    await pushToRecycleBin(repository, entry).catch(() => {});
+  }
+
+  return result;
 }
 
 export async function listTasks(repository: TaskboardRepository, storyId?: string, storyAlias?: string): Promise<Task[]> {
@@ -1358,8 +1547,11 @@ export async function deleteTask(
   repository: TaskboardRepository,
   taskId: string
 ): Promise<{ deletedId: string }> {
-  return mutateDocument(repository, (document) => {
+  let snapshot: { task: Task; storyId: string } | undefined;
+
+  const result = await mutateDocument(repository, (document) => {
     const task = requireTask(document, taskId);
+    snapshot = { task: JSON.parse(JSON.stringify(task)), storyId: task.storyId };
     return {
       scopes: collectTaskDeletionScopes(taskId),
       summary: `Deleted task ${task.title}.`,
@@ -1369,6 +1561,21 @@ export async function deleteTask(
       }
     };
   });
+
+  if (snapshot) {
+    const actor = await repository.getCurrentUser?.();
+    const entry = buildRecycleEntry(
+      "task",
+      taskId,
+      snapshot.task.title,
+      { primary: snapshot.task },
+      { type: "story", id: snapshot.storyId },
+      actor?.id
+    );
+    await pushToRecycleBin(repository, entry).catch(() => {});
+  }
+
+  return result;
 }
 
 export async function resolveNode(repository: TaskboardRepository, input: ResolveNodeInput): Promise<BoardNodeSummary> {
@@ -1510,4 +1717,141 @@ export async function listNotifications(repository: TaskboardRepository, userId:
 
 export async function readNodeNotifications(repository: TaskboardRepository, userId: string, nodeId: string): Promise<void> {
   await repository.readNodeNotifications?.(userId, nodeId);
+}
+
+export async function listRecycleBin(repository: TaskboardRepository): Promise<RecycleBinEntry[]> {
+  return repository.listRecycleBin?.() ?? [];
+}
+
+export async function emptyRecycleBin(repository: TaskboardRepository): Promise<void> {
+  await repository.emptyRecycleBin?.();
+}
+
+export async function permanentDeleteRecycleEntry(repository: TaskboardRepository, entryId: string): Promise<void> {
+  await repository.removeFromRecycleBin?.([entryId]);
+}
+
+interface RecyclePayload {
+  primary: Epic | Feature | UserStory | Task | NodeComment;
+  features?: Feature[];
+  stories?: UserStory[];
+  tasks?: Task[];
+}
+
+function reinsertTasks(document: TaskboardDocument, tasks: Task[] | undefined): void {
+  if (!tasks?.length) return;
+  for (const task of tasks) {
+    document.tasks[task.id] = task;
+    const story = document.userStories[task.storyId];
+    if (story && !story.taskIds.includes(task.id)) story.taskIds.push(task.id);
+  }
+}
+
+function reinsertStories(document: TaskboardDocument, stories: UserStory[] | undefined): void {
+  if (!stories?.length) return;
+  for (const story of stories) {
+    document.userStories[story.id] = story;
+    const feature = document.features[story.featureId];
+    if (feature && !feature.storyIds.includes(story.id)) feature.storyIds.push(story.id);
+  }
+}
+
+function reinsertFeatures(document: TaskboardDocument, features: Feature[] | undefined): void {
+  if (!features?.length) return;
+  for (const feature of features) {
+    document.features[feature.id] = feature;
+    const epic = document.epics[feature.epicId];
+    if (epic && !epic.featureIds.includes(feature.id)) epic.featureIds.push(feature.id);
+  }
+}
+
+export async function restoreFromRecycleBin(repository: TaskboardRepository, entryId: string): Promise<{ restoredId: string }> {
+  const all = await (repository.listRecycleBin?.() ?? Promise.resolve([]));
+  const entry = all.find((e) => e.id === entryId);
+  if (!entry) {
+    throw new NotFoundError(`Recycle bin entry ${entryId} was not found.`);
+  }
+
+  const payload = entry.payload as RecyclePayload;
+  let restoredId: string | undefined;
+
+  await mutateDocument(repository, (_document) => {
+    const timestamp = nowIso();
+    return {
+      scopes: [],
+      summary: `Restored ${entry.entityType} ${entry.title}.`,
+      apply: (nextDocument) => {
+        if (entry.entityType === "comment") {
+          if (!entry.parentContext) {
+            throw new NotFoundError("Comment recycle bin entry is missing parent context.");
+          }
+          const parentNode = requireBoardNode(nextDocument, entry.parentContext.type as BoardNodeType, entry.parentContext.id);
+          const comment = payload.primary as NodeComment;
+          parentNode.comments.push(comment);
+          touchBoardNodeLineage(nextDocument, entry.parentContext.type as BoardNodeType, parentNode, timestamp);
+          restoredId = comment.id;
+          return;
+        }
+
+        if (entry.entityType === "task") {
+          if (!entry.parentContext) {
+            throw new NotFoundError("Task recycle bin entry is missing parent context.");
+          }
+          const story = requireStory(nextDocument, entry.parentContext.id);
+          const task = payload.primary as Task;
+          nextDocument.tasks[task.id] = task;
+          if (!story.taskIds.includes(task.id)) story.taskIds.push(task.id);
+          touchStoryLineage(nextDocument, story, timestamp);
+          restoredId = task.id;
+          return;
+        }
+
+        if (entry.entityType === "story") {
+          if (!entry.parentContext) {
+            throw new NotFoundError("Story recycle bin entry is missing parent context.");
+          }
+          const feature = requireFeature(nextDocument, entry.parentContext.id);
+          const story = payload.primary as UserStory;
+          nextDocument.userStories[story.id] = story;
+          if (!feature.storyIds.includes(story.id)) feature.storyIds.push(story.id);
+          reinsertTasks(nextDocument, payload.tasks);
+          touchFeatureLineage(nextDocument, feature, timestamp);
+          restoredId = story.id;
+          return;
+        }
+
+        if (entry.entityType === "feature") {
+          if (!entry.parentContext) {
+            throw new NotFoundError("Feature recycle bin entry is missing parent context.");
+          }
+          const epic = requireEpic(nextDocument, entry.parentContext.id);
+          const feature = payload.primary as Feature;
+          nextDocument.features[feature.id] = feature;
+          if (!epic.featureIds.includes(feature.id)) epic.featureIds.push(feature.id);
+          reinsertStories(nextDocument, payload.stories);
+          reinsertTasks(nextDocument, payload.tasks);
+          touchEditableEntity(epic, timestamp);
+          restoredId = feature.id;
+          return;
+        }
+
+        if (entry.entityType === "epic") {
+          const epic = payload.primary as Epic;
+          nextDocument.epics[epic.id] = epic;
+          if (!nextDocument.epicIds.includes(epic.id)) nextDocument.epicIds.push(epic.id);
+          reinsertFeatures(nextDocument, payload.features);
+          reinsertStories(nextDocument, payload.stories);
+          reinsertTasks(nextDocument, payload.tasks);
+          restoredId = epic.id;
+          return;
+        }
+
+        throw new Error(`Unsupported recycle bin entry type ${entry.entityType}.`);
+      }
+    };
+  });
+
+  await repository.removeFromRecycleBin?.([entryId]);
+
+  return { restoredId: restoredId ?? entry.entityId };
 }

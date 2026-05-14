@@ -7,6 +7,7 @@ import {
   Feature,
   NodeComment,
   Notification,
+  RecycleBinEntry,
   Task,
   TaskboardDocument,
   UserStory,
@@ -26,7 +27,8 @@ export const tableNames = [
   "comments",
   "links",
   "indexes",
-  "notifications"
+  "notifications",
+  "recycleBin"
 ] as const;
 
 export type TableName = (typeof tableNames)[number];
@@ -80,6 +82,7 @@ export type TableValueMap = {
   links: WorkLink;
   indexes: IndexesRecord;
   notifications: Notification;
+  recycleBin: RecycleBinEntry;
 };
 
 export type VersionedRecord<T> = {
@@ -148,7 +151,8 @@ export function createEmptyStatePackage(): StatePackage {
       comments: createEmptyTable<CommentRecord>(),
       links: createEmptyTable<WorkLink>(),
       indexes: createEmptyTable<IndexesRecord>(),
-      notifications: createEmptyTable<Notification>()
+      notifications: createEmptyTable<Notification>(),
+      recycleBin: createEmptyTable<RecycleBinEntry>()
     }
   };
 }
@@ -196,7 +200,8 @@ export function normalizeStatePackage(value: unknown): StatePackage {
       comments: normalizeTable<CommentRecord>(source.tables?.comments ?? empty.tables.comments),
       links: normalizeTable<WorkLink>(source.tables?.links ?? empty.tables.links),
       indexes: normalizeTable<IndexesRecord>(source.tables?.indexes ?? empty.tables.indexes),
-      notifications: normalizeTable<Notification>(source.tables?.notifications ?? empty.tables.notifications)
+      notifications: normalizeTable<Notification>(source.tables?.notifications ?? empty.tables.notifications),
+      recycleBin: normalizeTable<RecycleBinEntry>(source.tables?.recycleBin ?? empty.tables.recycleBin)
     }
   };
 }
@@ -280,7 +285,8 @@ export function documentToTableValues(document: TaskboardDocument): {
     comments,
     links: Object.fromEntries(Object.values(document.links).map((link) => [link.id, link])),
     indexes: { [mainId]: buildIndexes(document) },
-    notifications: {}
+    notifications: {},
+    recycleBin: {}
   };
 }
 
@@ -361,7 +367,7 @@ export function diffDocuments(baseline: TaskboardDocument, next: TaskboardDocume
   const changedTables = new Set<TableName>();
 
   for (const table of tableNames) {
-    if (table === "metadata" || table === "users" || table === "notifications") {
+    if (table === "metadata" || table === "users" || table === "notifications" || table === "recycleBin") {
       continue;
     }
 

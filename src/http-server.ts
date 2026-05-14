@@ -56,11 +56,15 @@ import {
   listEpics,
   listFeatures,
   listNotifications,
+  listRecycleBin,
   listTasks,
   listUserStories,
   listWorkLinks,
+  emptyRecycleBin,
+  permanentDeleteRecycleEntry,
   readNodeNotifications,
   resolveNode,
+  restoreFromRecycleBin,
   updateBoardBrief,
   updateEpic,
   updateFeature,
@@ -429,6 +433,25 @@ async function buildServer(config: AppConfig): Promise<FastifyInstance> {
     const { nodeId } = parseBody(readNodeNotificationsInputSchema, request.body);
     const currentUser = await repository.getCurrentUser?.();
     if (currentUser?.id) await readNodeNotifications(repository, currentUser.id, nodeId);
+    return { ok: true };
+  });
+
+  app.get("/api/recycle-bin", async () => listRecycleBin(repository));
+
+  app.post("/api/recycle-bin/:entryId/restore", async (request) => {
+    const previousRevision = await getCurrentBoardRevision();
+    const result = await restoreFromRecycleBin(repository, (request.params as { entryId: string }).entryId);
+    await emitBoardChangedIfRevisionAdvanced(previousRevision, "api");
+    return result;
+  });
+
+  app.delete("/api/recycle-bin/:entryId", async (request) => {
+    await permanentDeleteRecycleEntry(repository, (request.params as { entryId: string }).entryId);
+    return { ok: true };
+  });
+
+  app.delete("/api/recycle-bin", async () => {
+    await emptyRecycleBin(repository);
     return { ok: true };
   });
 

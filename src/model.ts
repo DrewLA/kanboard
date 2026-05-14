@@ -208,6 +208,22 @@ export interface Notification {
   createdAt: string;
 }
 
+export type RecycleBinEntryType = "epic" | "feature" | "story" | "task" | "comment";
+
+export interface RecycleBinEntry {
+  id: string;
+  entityType: RecycleBinEntryType;
+  entityId: string;
+  title: string;
+  payload: unknown;
+  parentContext?: {
+    type: BoardNodeType | "task";
+    id: string;
+  };
+  deletedAt: string;
+  deletedBy?: string;
+}
+
 export interface RecentMutation {
   revision: number;
   scopes: string[];
