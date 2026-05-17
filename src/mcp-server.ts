@@ -11,6 +11,15 @@ async function start(): Promise<void> {
   const config = getAppConfig();
   startupConfig = config;
   assertStorageConfig(config);
+
+  if (config.mode === "team" && !config.evmPrivateKey) {
+    throw new Error(
+      "The stdio MCP server cannot share the browser identity unlock. " +
+      `Use the HTTP MCP endpoint at http://${config.host}:${config.port}/mcp from the running app, ` +
+      "or set TASKBOARD_EVM_PRIVATE_KEY for a separate non-interactive MCP process."
+    );
+  }
+
   const repository = createTaskboardRepository(config);
   await repository.load({
     onCreate: () => {

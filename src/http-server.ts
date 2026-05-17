@@ -29,6 +29,7 @@ import {
   updateWorkLinkInputSchema
 } from "./model";
 import { buildMcpServer } from "./mcp-core";
+import { acquireHttpServerLock } from "./process-lock";
 import { RepositoryAccessError, RepositoryConflictError, createTaskboardRepository } from "./repository";
 import {
   NotFoundError,
@@ -92,6 +93,8 @@ type McpSessionRuntime = {
   server: ReturnType<typeof buildMcpServer>;
   transport: StreamableHTTPServerTransport;
 };
+
+const SHUTDOWN_FORCE_EXIT_MS = 5_000;
 
 const MUTATING_MCP_TOOLS = new Set([
   "update_board_brief",
@@ -246,7 +249,7 @@ function mcpError(code: number, message: string): {
 
 async function buildServer(config: AppConfig): Promise<FastifyInstance> {
   assertStorageConfig(config);
-  const app = Fastify({ logger: true });
+  const app = Fastify({ logger: true, forceCloseConnections: true });
   const repository = createTaskboardRepository(config);
   const agentRegistry = new AgentRegistry(createAgentRegistryFilePath(config.identityFile));
   const boardEvents = new BoardEventHub();
@@ -350,17 +353,51 @@ async function buildServer(config: AppConfig): Promise<FastifyInstance> {
     reply.status(500).send({ message: "Unexpected server error." });
   });
 
-  app.addHook("onClose", async () => {
-    const runtimes = [...mcpSessions.entries()];
-    mcpSessions.clear();
-    boardEvents.closeAll();
-    agentEvents.closeAll();
+  let liveConnectionsClosePromise: Promise<void> | undefined;
+  const closeLiveConnections = (): Promise<void> => {
+    liveConnectionsClosePromise ??= (async () => {
+      boardEvents.closeAll();
+      agentEvents.closeAll();
 
-    await Promise.all(runtimes.map(async ([sessionId, { transport }]) => {
-      await transport.close();
-      await agentRegistry.markDisconnected(sessionId);
-    }));
-    await agentRegistry.flush();
+      const runtimes = [...mcpSessions.entries()];
+      mcpSessions.clear();
+
+      const results = await Promise.allSettled(runtimes.map(async ([sessionId, { server, transport }]) => {
+        transport.onclose = undefined;
+
+        try {
+          await transport.close();
+        } catch (error) {
+          app.log.warn({ error, sessionId }, "Failed to close MCP transport during shutdown.");
+        }
+
+        try {
+          await server.close();
+        } catch (error) {
+          app.log.warn({ error, sessionId }, "Failed to close MCP server during shutdown.");
+        }
+
+        await agentRegistry.markDisconnected(sessionId);
+      }));
+
+      for (const result of results) {
+        if (result.status === "rejected") {
+          app.log.warn({ error: result.reason }, "Failed to disconnect an MCP session during shutdown.");
+        }
+      }
+
+      await agentRegistry.flush();
+    })();
+
+    return liveConnectionsClosePromise;
+  };
+
+  app.addHook("preClose", async () => {
+    await closeLiveConnections();
+  });
+
+  app.addHook("onClose", async () => {
+    await closeLiveConnections();
   });
 
   app.get("/api/health", async () => ({
@@ -370,6 +407,7 @@ async function buildServer(config: AppConfig): Promise<FastifyInstance> {
     dbConfigured: Boolean(config.dbString),
     host: config.host,
     port: config.port,
+    pid: process.pid,
     identity: await repository.getIdentityStatus?.()
   }));
 
@@ -648,18 +686,52 @@ async function buildServer(config: AppConfig): Promise<FastifyInstance> {
 async function start(): Promise<void> {
   const config = getAppConfig();
   startupConfig = config;
-  const app = await buildServer(config);
+  const serverLock = await acquireHttpServerLock(config);
+  let app: FastifyInstance;
 
-  const shutdown = async (signal: string): Promise<void> => {
-    app.log.info({ signal }, "Shutting down HTTP server.");
+  try {
+    app = await buildServer(config);
+  } catch (error) {
+    await serverLock.release();
+    throw error;
+  }
 
-    try {
-      await app.close();
-      process.exit(0);
-    } catch (error) {
-      app.log.error(error, "Failed to close HTTP server cleanly.");
-      process.exit(1);
+  app.addHook("onClose", async () => {
+    await serverLock.release();
+  });
+
+  let shutdownPromise: Promise<void> | undefined;
+  const shutdown = (signal: string): Promise<void> => {
+    if (shutdownPromise) {
+      app.log.warn({ signal }, "Shutdown already in progress.");
+      return shutdownPromise;
     }
+
+    app.log.info({ signal }, "Shutting down HTTP server.");
+    shutdownPromise = (async () => {
+      const forceExitTimer = setTimeout(() => {
+        app.log.error(
+          { signal, timeoutMs: SHUTDOWN_FORCE_EXIT_MS },
+          "HTTP server shutdown timed out; forcing process exit."
+        );
+        process.exit(1);
+      }, SHUTDOWN_FORCE_EXIT_MS);
+      forceExitTimer.unref();
+
+      try {
+        await app.close();
+        await serverLock.release();
+        clearTimeout(forceExitTimer);
+        process.exit(0);
+      } catch (error) {
+        await serverLock.release();
+        clearTimeout(forceExitTimer);
+        app.log.error(error, "Failed to close HTTP server cleanly.");
+        process.exit(1);
+      }
+    })();
+
+    return shutdownPromise;
   };
 
   process.on("SIGINT", () => {
@@ -670,7 +742,12 @@ async function start(): Promise<void> {
     void shutdown("SIGTERM");
   });
 
-  await app.listen({ host: config.host, port: config.port });
+  try {
+    await app.listen({ host: config.host, port: config.port });
+  } catch (error) {
+    await serverLock.release();
+    throw error;
+  }
 }
 
 void start().catch((error) => {

@@ -1,6 +1,6 @@
 SHELL := /bin/zsh
 
-.PHONY: install build dev start local mcp mcp-local check upgrade identity-onboard identity-whoami migrate-up migrate-down
+.PHONY: install build dev dev-watch start local mcp mcp-local check upgrade identity-onboard identity-whoami migrate-up migrate-down
 
 install:
 	npm install
@@ -10,6 +10,9 @@ build:
 
 dev:
 	npm run dev
+
+dev-watch:
+	npm run dev:watch
 
 start: build
 	npm run start
