@@ -440,6 +440,24 @@ export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit
     });
   }, [shellSize]);
 
+  // Block backdrop close when any drag starting inside the shell releases outside it
+  function onShellMouseDown(e) {
+    const startX = e.clientX;
+    const startY = e.clientY;
+    function onMove(ev) {
+      if (Math.abs(ev.clientX - startX) > 3 || Math.abs(ev.clientY - startY) > 3) {
+        wasDraggingRef.current = true;
+      }
+    }
+    function onUp() {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      setTimeout(() => { wasDraggingRef.current = false; }, 0);
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
+
   function startResize(e) {
     e.preventDefault();
     e.stopPropagation();
@@ -527,6 +545,7 @@ export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit
           aria-modal="true"
           style=${shellSize ? { width: `${shellSize.width}px`, height: `${shellSize.height}px`, maxHeight: "none" } : {}}
           onClick=${(e) => e.stopPropagation()}
+          onMouseDown=${onShellMouseDown}
         >
           <div className="modal-header">
             <h2>${modal.title}</h2>
