@@ -483,10 +483,16 @@ function CommentsPane({ taskId, comments, currentUser, usersMap, onMentionInput,
 export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit, submitting = false, submitError = null, taskboard, activeFilters, lookup, onSwitchModal, onSaveValues, usersMap, currentUser, onReadNode, onReload, notifications = [] }) {
   const formRef = useRef(null);
   const shellRef = useRef(null);
+  const stageRef = useRef(null);
   const resizingRef = useRef(false);
   const wasDraggingRef = useRef(false);
   const [commentsOpen, setCommentsOpen] = useState(false);
   const [shellSize, setShellSize] = useState(null);
+
+  // Layout constants shared between shift calc and resize clamping
+  const PANE_W = 340;
+  const PANE_GAP = 12;
+  const EDGE_PAD = 16;
 
   const isEditTaskModal = Boolean(modal?.type === "edit-task" && modal?.entity?.id);
   const taskModalId = isEditTaskModal ? modal.entity.id : undefined;
@@ -504,6 +510,32 @@ export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit
   useEffect(() => {
     if (commentsOpen && taskModalId && onReadNode) onReadNode(taskModalId, "comment");
   }, [commentsOpen, taskModalId]);
+
+  // Shift the stage left when comments pane would clip the viewport edge
+  useEffect(() => {
+    function applyShift() {
+      if (!stageRef.current || !shellRef.current) return;
+      if (!commentsOpen) {
+        stageRef.current.style.transform = "";
+        return;
+      }
+      const vw = window.innerWidth;
+      const shellW = shellRef.current.offsetWidth;
+      const shellLeft = (vw - shellW) / 2;
+      const paneRight = shellLeft + shellW + PANE_GAP + PANE_W;
+      const overflow = paneRight - (vw - EDGE_PAD);
+      if (overflow <= 0) {
+        stageRef.current.style.transform = "";
+        return;
+      }
+      const maxShift = Math.max(0, shellLeft - EDGE_PAD);
+      const shift = Math.min(overflow, maxShift);
+      stageRef.current.style.transform = `translateX(-${shift}px)`;
+    }
+    applyShift();
+    window.addEventListener("resize", applyShift);
+    return () => window.removeEventListener("resize", applyShift);
+  }, [commentsOpen, shellSize]);
 
   // Scale textarea heights proportionally when modal is resized
   const DEFAULT_H = 560;
@@ -548,7 +580,7 @@ export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit
     const startH = rect.height;
     const MIN_W = 600; // 75% of default 800px
     const MIN_H = 420; // 75% of default min-height 560px
-    const MAX_W = Math.min(1200, window.innerWidth - 64); // 150% of default 800px
+    const MAX_W = Math.min(1200, window.innerWidth - PANE_W - PANE_GAP - EDGE_PAD * 2); // never wider than viewport with comments open
     const MAX_H = Math.min(840, window.innerHeight - 64); // 150% of default 560px
 
     resizingRef.current = true;
@@ -627,7 +659,7 @@ export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit
 
   return html`
     <div className="modal-backdrop" role="presentation" onClick=${(e) => { if (!wasDraggingRef.current) onCloseAll(e); }}>
-      <div className="modal-stage">
+      <div className="modal-stage" ref=${stageRef}>
         <div
           className="modal-shell"
           ref=${shellRef}
