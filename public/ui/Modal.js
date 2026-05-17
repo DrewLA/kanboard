@@ -411,14 +411,70 @@ function CommentsPane({ taskId, comments, currentUser, usersMap, onMentionInput,
 
 export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit, submitting = false, submitError = null, taskboard, activeFilters, lookup, onSwitchModal, onSaveValues, usersMap, currentUser, onReadNode, onReload }) {
   const formRef = useRef(null);
+  const shellRef = useRef(null);
+  const resizingRef = useRef(false);
+  const wasDraggingRef = useRef(false);
   const [commentsOpen, setCommentsOpen] = useState(false);
+  const [shellSize, setShellSize] = useState(null);
 
   const isEditTaskModal = Boolean(modal?.type === "edit-task" && modal?.entity?.id);
   const taskModalId = isEditTaskModal ? modal.entity.id : undefined;
 
+  useEffect(() => { setShellSize(null); }, [modal?.type, modal?.entity?.id]);
+
   useEffect(() => {
     if (commentsOpen && taskModalId && onReadNode) onReadNode(taskModalId);
   }, [commentsOpen, taskModalId]);
+
+  // Scale textarea heights proportionally when modal is resized
+  const DEFAULT_H = 560;
+  useEffect(() => {
+    if (!shellRef.current) return;
+    const textareas = Array.from(shellRef.current.querySelectorAll("form textarea"));
+    const h = shellSize?.height ?? DEFAULT_H;
+    const factor = h / DEFAULT_H;
+    textareas.forEach((ta) => {
+      if (!ta.dataset.naturalH) ta.dataset.naturalH = String(ta.offsetHeight || 80);
+      const base = parseInt(ta.dataset.naturalH, 10) || 80;
+      ta.style.minHeight = factor > 1 ? `${Math.round(base * factor)}px` : "";
+    });
+  }, [shellSize]);
+
+  function startResize(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!shellRef.current) return;
+    const rect = shellRef.current.getBoundingClientRect();
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const startW = rect.width;
+    const startH = rect.height;
+    const MIN_W = 600; // 75% of default 800px
+    const MIN_H = 420; // 75% of default min-height 560px
+    const MAX_W = Math.min(1200, window.innerWidth - 64); // 150% of default 800px
+    const MAX_H = Math.min(840, window.innerHeight - 64); // 150% of default 560px
+
+    resizingRef.current = true;
+
+    function onMove(ev) {
+      setShellSize({
+        width: Math.max(MIN_W, Math.min(MAX_W, startW + ev.clientX - startX)),
+        height: Math.max(MIN_H, Math.min(MAX_H, startH + ev.clientY - startY)),
+      });
+    }
+
+    function onUp() {
+      resizingRef.current = false;
+      wasDraggingRef.current = true;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      // clear after the click event fires so backdrop onClick is suppressed
+      setTimeout(() => { wasDraggingRef.current = false; }, 0);
+    }
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
 
   const users = Object.values(usersMap || {}).sort((a, b) => a.name.localeCompare(b.name));
   const { mentionState, filtered, handleInput, selectUser, closeMention } = useMentions(users);
@@ -462,9 +518,16 @@ export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit
   const commentCount = liveTask?.comments?.length || 0;
 
   return html`
-    <div className="modal-backdrop" role="presentation" onClick=${onCloseAll}>
+    <div className="modal-backdrop" role="presentation" onClick=${(e) => { if (!wasDraggingRef.current) onCloseAll(e); }}>
       <div className="modal-stage">
-        <div className="modal-shell" role="dialog" aria-modal="true" onClick=${(e) => e.stopPropagation()}>
+        <div
+          className="modal-shell"
+          ref=${shellRef}
+          role="dialog"
+          aria-modal="true"
+          style=${shellSize ? { width: `${shellSize.width}px`, height: `${shellSize.height}px`, maxHeight: "none" } : {}}
+          onClick=${(e) => e.stopPropagation()}
+        >
           <div className="modal-header">
             <h2>${modal.title}</h2>
             ${isEditTask ? html`
@@ -497,6 +560,12 @@ export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit
             ${submitError ? html`<div className="form-error" role="alert">${submitError}</div>` : null}
           </form>
         </div>
+        <div
+          className="modal-resize-handle"
+          onMouseDown=${startResize}
+          aria-hidden="true"
+          title="Drag to resize"
+        ></div>
         ${commentsOpen && liveTask ? html`
           <${CommentsPane}
             taskId=${liveTask.id}
