@@ -92,6 +92,61 @@ function MentionMenu({ mentionState, filtered, onSelect, onClose }) {
   `;
 }
 
+// ---- Expandable textarea ----
+
+function ExpandableTextarea({ name, rows, defaultValue }) {
+  const taRef = useRef(null);
+  const [expanded, setExpanded] = useState(false);
+
+  function toggle(e) {
+    e.preventDefault();
+    const ta = taRef.current;
+    if (!ta) return;
+
+    if (!expanded) {
+      // Pin current height as start point so browser can interpolate
+      const fromH = ta.offsetHeight;
+      ta.dataset.collapsedH = String(fromH);
+      ta.style.height = fromH + "px";
+      void ta.offsetHeight; // force reflow before transition
+      ta.style.transition = "height 280ms cubic-bezier(0.4, 0, 0.2, 1)";
+      ta.style.height = ta.scrollHeight + "px";
+      ta.style.overflowY = "hidden"; // lock internal scroll; outer overlay scrolls
+      setExpanded(true);
+      setTimeout(() => { if (ta) ta.style.transition = ""; }, 290);
+    } else {
+      const toH = parseInt(ta.dataset.collapsedH || "0", 10);
+      ta.style.transition = "height 280ms cubic-bezier(0.4, 0, 0.2, 1)";
+      ta.style.height = toH > 0 ? toH + "px" : "";
+      ta.style.overflowY = "";
+      setExpanded(false);
+      // After animation completes, clear explicit height so rows attr takes over
+      setTimeout(() => {
+        if (ta) { ta.style.transition = ""; ta.style.height = ""; }
+      }, 290);
+    }
+  }
+
+  return html`
+    <div className="textarea-wrap">
+      <textarea ref=${taRef} name=${name} rows=${rows} defaultValue=${defaultValue}></textarea>
+      <button
+        type="button"
+        className="textarea-expand-btn"
+        onClick=${toggle}
+        title=${expanded ? "Collapse" : "Expand to fit content"}
+      >
+        <svg width="10" height="6" viewBox="0 0 10 6" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          ${expanded
+            ? html`<path d="M1 5L5 1L9 5" />`
+            : html`<path d="M1 1L5 5L9 1" />`
+          }
+        </svg>
+      </button>
+    </div>
+  `;
+}
+
 // ---- Form body builder ----
 
 function buildModalBody(modal, taskboard, activeFilters, lookup, onSwitchModal, usersMap) {
@@ -106,12 +161,12 @@ function buildModalBody(modal, taskboard, activeFilters, lookup, onSwitchModal, 
     const b = modal.entity || {};
     return html`
       <label>Product name<input name="productName" defaultValue=${b.productName || ""} required /></label>
-      <label>Objective<textarea name="objective" rows="4" defaultValue=${b.objective || ""}></textarea></label>
-      <label>Scope definition<textarea name="scopeDefinition" rows="4" defaultValue=${b.scopeDefinition || ""}></textarea></label>
-      <label>Non-goals<textarea name="nonGoals" rows="3" defaultValue=${b.nonGoals || ""}></textarea></label>
-      <label>Success criteria<textarea name="successCriteria" rows="3" defaultValue=${b.successCriteria || ""}></textarea></label>
-      <label>Current focus<textarea name="currentFocus" rows="3" defaultValue=${b.currentFocus || ""}></textarea></label>
-      <label>Implementation notes<textarea name="implementationNotes" rows="6" defaultValue=${b.implementationNotes || ""}></textarea></label>
+      <label>Objective<${ExpandableTextarea} name="objective" rows="4" defaultValue=${b.objective || ""} /></label>
+      <label>Scope definition<${ExpandableTextarea} name="scopeDefinition" rows="4" defaultValue=${b.scopeDefinition || ""} /></label>
+      <label>Non-goals<${ExpandableTextarea} name="nonGoals" rows="3" defaultValue=${b.nonGoals || ""} /></label>
+      <label>Success criteria<${ExpandableTextarea} name="successCriteria" rows="3" defaultValue=${b.successCriteria || ""} /></label>
+      <label>Current focus<${ExpandableTextarea} name="currentFocus" rows="3" defaultValue=${b.currentFocus || ""} /></label>
+      <label>Implementation notes<${ExpandableTextarea} name="implementationNotes" rows="6" defaultValue=${b.implementationNotes || ""} /></label>
     `;
   }
 
@@ -121,7 +176,7 @@ function buildModalBody(modal, taskboard, activeFilters, lookup, onSwitchModal, 
     return html`
       ${e.id ? html`<input type="hidden" name="id" value=${e.id} />` : null}
       <label>Title<input name="title" defaultValue=${sv.title ?? e.title ?? ""} required /></label>
-      <label>Summary<textarea name="summary" rows="4" defaultValue=${sv.summary ?? e.summary ?? ""}></textarea></label>
+      <label>Summary<${ExpandableTextarea} name="summary" rows="4" defaultValue=${sv.summary ?? e.summary ?? ""} /></label>
       <div className="form-row">
         <label>Status
           <select name="status" defaultValue=${sv.status || e.status || "pending"}>
@@ -153,7 +208,7 @@ function buildModalBody(modal, taskboard, activeFilters, lookup, onSwitchModal, 
         />
       </label>
       <label>Title<input name="title" defaultValue=${sv.title ?? f.title ?? ""} required /></label>
-      <label>Summary<textarea name="summary" rows="4" defaultValue=${sv.summary ?? f.summary ?? ""}></textarea></label>
+      <label>Summary<${ExpandableTextarea} name="summary" rows="4" defaultValue=${sv.summary ?? f.summary ?? ""} /></label>
       <div className="form-row">
         <label>Status
           <select name="status" defaultValue=${sv.status || f.status || "pending"}>
@@ -185,9 +240,9 @@ function buildModalBody(modal, taskboard, activeFilters, lookup, onSwitchModal, 
         />
       </label>
       <label>Title<input name="title" defaultValue=${sv.title ?? s.title ?? ""} required /></label>
-      <label>Summary<textarea name="summary" rows="4" defaultValue=${sv.summary ?? s.summary ?? ""}></textarea></label>
+      <label>Summary<${ExpandableTextarea} name="summary" rows="4" defaultValue=${sv.summary ?? s.summary ?? ""} /></label>
       <label>Acceptance criteria (one per line)
-        <textarea name="acceptanceCriteria" rows="5" defaultValue=${sv.acceptanceCriteria ?? (s.acceptanceCriteria || []).join("\n")}></textarea>
+        <${ExpandableTextarea} name="acceptanceCriteria" rows="5" defaultValue=${sv.acceptanceCriteria ?? (s.acceptanceCriteria || []).join("\n")} />
       </label>
       <div className="form-row">
         <label>Status
@@ -221,8 +276,8 @@ function buildModalBody(modal, taskboard, activeFilters, lookup, onSwitchModal, 
         />
       </label>
       <label>Title<input name="title" defaultValue=${sv.title ?? t.title ?? ""} required /></label>
-      <label>Summary<textarea name="summary" rows="4" defaultValue=${sv.summary ?? t.summary ?? ""}></textarea></label>
-      <label>Implementation notes<textarea name="implementationNotes" rows="4" defaultValue=${sv.implementationNotes ?? t.implementationNotes ?? ""}></textarea></label>
+      <label>Summary<${ExpandableTextarea} name="summary" rows="4" defaultValue=${sv.summary ?? t.summary ?? ""} /></label>
+      <label>Implementation notes<${ExpandableTextarea} name="implementationNotes" rows="4" defaultValue=${sv.implementationNotes ?? t.implementationNotes ?? ""} /></label>
       <div className="form-row">
         <label>Estimate<input name="estimate" defaultValue=${sv.estimate ?? t.estimate ?? ""} /></label>
         <label>Tags (comma-separated)<input name="tags" defaultValue=${sv.tags ?? (t.tags || []).join(", ")} /></label>
