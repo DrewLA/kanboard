@@ -9,6 +9,13 @@ const html = htm.bind(React.createElement);
 
 // ---- @mention system ----
 
+function makeFieldMentionChecker(userName) {
+  if (!userName) return () => false;
+  const escaped = userName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`@${escaped}(?=\\s|$|[^\\w])`, "i");
+  return (value) => typeof value === "string" && re.test(value);
+}
+
 function useMentions(users) {
   const [state, setState] = useState(null);
   // state: { query, rect, el, mentionStart, setControlled }
@@ -149,13 +156,20 @@ function ExpandableTextarea({ name, rows, defaultValue }) {
 
 // ---- Form body builder ----
 
-function buildModalBody(modal, taskboard, activeFilters, lookup, onSwitchModal, usersMap) {
+function fieldMentionTag(present) {
+  return present
+    ? html`<span className="form-field-mention" title="You were mentioned here">@</span>`
+    : null;
+}
+
+function buildModalBody(modal, taskboard, activeFilters, lookup, onSwitchModal, usersMap, hasFieldMention) {
   const epics = taskboard?.epics || [];
   const allFeatures = epics.flatMap((epic) => epic.features);
   const allStories = allFeatures.flatMap((feature) => feature.userStories);
   const userOptions = Object.values(usersMap || {})
     .sort((left, right) => left.name.localeCompare(right.name))
     .map((user) => ({ value: user.id, label: user.name }));
+  const check = hasFieldMention || (() => false);
 
   if (modal.type === "board-brief") {
     const b = modal.entity || {};
@@ -275,9 +289,9 @@ function buildModalBody(modal, taskboard, activeFilters, lookup, onSwitchModal, 
           actionItem=${{ label: "New Story", onAction: () => onSwitchModal("create-story", "Create Story") }}
         />
       </label>
-      <label>Title<input name="title" defaultValue=${sv.title ?? t.title ?? ""} required /></label>
-      <label>Summary<${ExpandableTextarea} name="summary" rows="4" defaultValue=${sv.summary ?? t.summary ?? ""} /></label>
-      <label>Implementation notes<${ExpandableTextarea} name="implementationNotes" rows="4" defaultValue=${sv.implementationNotes ?? t.implementationNotes ?? ""} /></label>
+      <label>Title${fieldMentionTag(check(t.title))}<input name="title" defaultValue=${sv.title ?? t.title ?? ""} required /></label>
+      <label>Summary${fieldMentionTag(check(t.summary))}<${ExpandableTextarea} name="summary" rows="4" defaultValue=${sv.summary ?? t.summary ?? ""} /></label>
+      <label>Implementation notes${fieldMentionTag(check(t.implementationNotes))}<${ExpandableTextarea} name="implementationNotes" rows="4" defaultValue=${sv.implementationNotes ?? t.implementationNotes ?? ""} /></label>
       <div className="form-row">
         <label>Estimate<input name="estimate" defaultValue=${sv.estimate ?? t.estimate ?? ""} /></label>
         <label>Tags (comma-separated)<input name="tags" defaultValue=${sv.tags ?? (t.tags || []).join(", ")} /></label>
@@ -324,7 +338,7 @@ function commentInitial(displayName) {
   return (displayName || "?")[0].toUpperCase();
 }
 
-function CommentsPane({ taskId, comments, currentUser, usersMap, onMentionInput, onCommentDeleted, onClose }) {
+function CommentsPane({ taskId, comments, currentUser, usersMap, onMentionInput, onCommentDeleted, onClose, mentionedCommentIds }) {
   const [body, setBody] = useState("");
   const [posting, setPosting] = useState(false);
   const [pending, setPending] = useState([]);
@@ -414,8 +428,10 @@ function CommentsPane({ taskId, comments, currentUser, usersMap, onMentionInput,
               const isPending = c.id?.startsWith?.("temp_");
               const isDeleting = deletingIds.has(c.id);
               const isConfirming = confirmingId === c.id;
+              const isMention = mentionedCommentIds?.has?.(c.id) ?? false;
               return html`
-                <div key=${c.id} className=${`comment-bubble${isDeleting ? " comment-bubble--deleting" : ""}`}>
+                <div key=${c.id} className=${`comment-bubble${isDeleting ? " comment-bubble--deleting" : ""}${isMention ? " comment-bubble--mention" : ""}`}>
+                  ${isMention ? html`<span className="comment-mention-tag" title="You were mentioned here">@</span>` : null}
                   <div className="comment-bubble-meta">
                     <span className="comment-avatar">${commentInitial(displayName)}</span>
                     <span className="comment-author">${displayName}</span>
@@ -464,7 +480,7 @@ function CommentsPane({ taskId, comments, currentUser, usersMap, onMentionInput,
 
 // ---- FormModal ----
 
-export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit, submitting = false, submitError = null, taskboard, activeFilters, lookup, onSwitchModal, onSaveValues, usersMap, currentUser, onReadNode, onReload }) {
+export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit, submitting = false, submitError = null, taskboard, activeFilters, lookup, onSwitchModal, onSaveValues, usersMap, currentUser, onReadNode, onReload, notifications = [] }) {
   const formRef = useRef(null);
   const shellRef = useRef(null);
   const resizingRef = useRef(false);
@@ -477,8 +493,16 @@ export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit
 
   useEffect(() => { setShellSize(null); }, [modal?.type, modal?.entity?.id]);
 
+  // Dismiss field-type notifications on modal open (user can see field indicators briefly first)
   useEffect(() => {
-    if (commentsOpen && taskModalId && onReadNode) onReadNode(taskModalId);
+    if (!taskModalId || !onReadNode) return;
+    const t = setTimeout(() => onReadNode(taskModalId, "field"), 2500);
+    return () => clearTimeout(t);
+  }, [taskModalId]);
+
+  // Dismiss comment-type notifications when comments pane opens
+  useEffect(() => {
+    if (commentsOpen && taskModalId && onReadNode) onReadNode(taskModalId, "comment");
   }, [commentsOpen, taskModalId]);
 
   // Scale textarea heights proportionally when modal is resized
@@ -579,7 +603,6 @@ export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit
     onSwitchModal(type, title, null, parentId);
   }
 
-  const body = buildModalBody(modal, taskboard, activeFilters, lookup, handleSwitchModal, usersMap);
   const modalEntity = modal.entity || null;
   const showEditMeta = Boolean(
     modalEntity?.updatedAt &&
@@ -589,6 +612,18 @@ export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit
   const isEditTask = modal.type === "edit-task";
   const liveTask = isEditTask && modalEntity?.id ? (lookup.findTask(modalEntity.id) || modalEntity) : modalEntity;
   const commentCount = liveTask?.comments?.length || 0;
+
+  const taskNotifs = isEditTask && liveTask?.id
+    ? notifications.filter((n) => n.nodeId === liveTask.id)
+    : [];
+  const commentNotifs = taskNotifs.filter((n) => n.sourceType === "comment");
+  const fieldNotifs = taskNotifs.filter((n) => n.sourceType === "field");
+  const commentNotifIds = new Set(commentNotifs.map((n) => (n.sourceId || "").replace(/^comment:/, "")));
+  const hasFieldMention = fieldNotifs.length > 0
+    ? makeFieldMentionChecker(currentUser?.name)
+    : () => false;
+
+  const body = buildModalBody(modal, taskboard, activeFilters, lookup, handleSwitchModal, usersMap, hasFieldMention);
 
   return html`
     <div className="modal-backdrop" role="presentation" onClick=${(e) => { if (!wasDraggingRef.current) onCloseAll(e); }}>
@@ -606,12 +641,13 @@ export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit
             <h2>${modal.title}</h2>
             ${isEditTask ? html`
               <button
-                className=${`button button-ghost comments-toggle-btn${commentsOpen ? " comments-toggle-btn--active" : ""}`}
+                className=${`button button-ghost comments-toggle-btn${commentsOpen ? " comments-toggle-btn--active" : ""}${commentNotifs.length > 0 ? " comments-toggle-btn--has-notif" : ""}`}
                 type="button"
                 onClick=${() => setCommentsOpen((o) => !o)}
-                title="Toggle comments"
+                title=${commentNotifs.length > 0 ? `${commentNotifs.length} unread mention${commentNotifs.length === 1 ? "" : "s"}` : "Toggle comments"}
               >
                 Comments${commentCount > 0 ? html`<span className="comments-header-badge">${commentCount}</span>` : null}
+                ${commentNotifs.length > 0 ? html`<span className="comments-header-mention-badge">@${commentNotifs.length}</span>` : null}
               </button>
             ` : null}
             <button className="button button-ghost" onClick=${onCloseAll} aria-label="Close" type="button">✕</button>
@@ -649,6 +685,7 @@ export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit
             onMentionInput=${handleInput}
             onCommentDeleted=${onReload}
             onClose=${() => setCommentsOpen(false)}
+            mentionedCommentIds=${commentNotifIds}
           />
         ` : null}
       </div>

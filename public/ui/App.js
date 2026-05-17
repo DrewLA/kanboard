@@ -526,10 +526,14 @@ export function App() {
     }
   }
 
-  async function readNodeNotifications(nodeId) {
+  async function readNodeNotifications(nodeId, sourceType) {
     try {
-      await request("/api/notifications/read-node", { method: "POST", body: JSON.stringify({ nodeId }) });
-      setNotifications((prev) => prev.filter((n) => n.nodeId !== nodeId));
+      await request("/api/notifications/read-node", { method: "POST", body: JSON.stringify({ nodeId, sourceType }) });
+      setNotifications((prev) => prev.filter((n) => {
+        if (n.nodeId !== nodeId) return true;
+        if (sourceType && n.sourceType !== sourceType) return true;
+        return false;
+      }));
     } catch {}
   }
 

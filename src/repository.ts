@@ -7,7 +7,7 @@ import { Redis } from "@upstash/redis";
 import { AppConfig, assertRedisConfig } from "./config";
 import { deriveAddress, signMutationEnvelope, verifyMutationEnvelope } from "./identity";
 import { decryptPrivateKey, fileExists, readIdentityFile } from "./identity-store";
-import { BoardNodeType, Notification, RecycleBinEntry, WorkItemType, createEmptyTaskboardDocument, normalizeTaskboardDocument, TaskboardDocument, nowIso } from "./model";
+import { BoardNodeType, Notification, NotificationSourceType, RecycleBinEntry, WorkItemType, createEmptyTaskboardDocument, normalizeTaskboardDocument, TaskboardDocument, nowIso } from "./model";
 import {
   PackageDiff,
   RecordRef,
@@ -109,7 +109,7 @@ export interface TaskboardRepository {
   createNotifications?(notifications: Notification[]): Promise<void>;
   deleteNotificationsBySource?(sourceId: string): Promise<void>;
   deleteNodeNotifications?(nodeId: string): Promise<void>;
-  readNodeNotifications?(userId: string, nodeId: string): Promise<void>;
+  readNodeNotifications?(userId: string, nodeId: string, sourceType?: NotificationSourceType): Promise<void>;
   listRecycleBin?(): Promise<RecycleBinEntry[]>;
   addToRecycleBin?(entries: RecycleBinEntry[]): Promise<void>;
   removeFromRecycleBin?(entryIds: string[]): Promise<void>;
@@ -634,10 +634,14 @@ class ModularTaskboardRepository implements TaskboardRepository {
     await this.primary.commitPackage(next, [], new Set(["notifications"]));
   }
 
-  async readNodeNotifications(userId: string, nodeId: string): Promise<void> {
+  async readNodeNotifications(userId: string, nodeId: string, sourceType?: NotificationSourceType): Promise<void> {
     const pkg = await this.primary.loadPackage();
     const ids = Object.entries(pkg.tables.notifications.rows)
-      .filter(([, row]) => row.value.recipientId === userId && row.value.nodeId === nodeId)
+      .filter(([, row]) => {
+        if (row.value.recipientId !== userId || row.value.nodeId !== nodeId) return false;
+        if (sourceType && row.value.sourceType !== sourceType) return false;
+        return true;
+      })
       .map(([id]) => id);
     if (!ids.length) return;
     const next = cloneStatePackage(pkg);

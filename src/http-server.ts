@@ -84,7 +84,8 @@ const unlockIdentityInputSchema = z.object({
 });
 
 const readNodeNotificationsInputSchema = z.object({
-  nodeId: z.string().min(1)
+  nodeId: z.string().min(1),
+  sourceType: z.enum(["comment", "field"]).optional()
 });
 
 type McpSessionRuntime = {
@@ -430,9 +431,9 @@ async function buildServer(config: AppConfig): Promise<FastifyInstance> {
   });
 
   app.post("/api/notifications/read-node", async (request) => {
-    const { nodeId } = parseBody(readNodeNotificationsInputSchema, request.body);
+    const { nodeId, sourceType } = parseBody(readNodeNotificationsInputSchema, request.body);
     const currentUser = await repository.getCurrentUser?.();
-    if (currentUser?.id) await readNodeNotifications(repository, currentUser.id, nodeId);
+    if (currentUser?.id) await readNodeNotifications(repository, currentUser.id, nodeId, sourceType);
     return { ok: true };
   });
 

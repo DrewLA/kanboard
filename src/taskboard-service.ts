@@ -1715,8 +1715,8 @@ export async function listNotifications(repository: TaskboardRepository, userId:
   return repository.listNotifications?.(userId) ?? [];
 }
 
-export async function readNodeNotifications(repository: TaskboardRepository, userId: string, nodeId: string): Promise<void> {
-  await repository.readNodeNotifications?.(userId, nodeId);
+export async function readNodeNotifications(repository: TaskboardRepository, userId: string, nodeId: string, sourceType?: NotificationSourceType): Promise<void> {
+  await repository.readNodeNotifications?.(userId, nodeId, sourceType);
 }
 
 export async function listRecycleBin(repository: TaskboardRepository): Promise<RecycleBinEntry[]> {
