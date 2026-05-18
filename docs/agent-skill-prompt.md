@@ -121,7 +121,7 @@ For Claude Code specifically:
 claude mcp add --transport http kanboard http://127.0.0.1:8787/mcp
 ```
 
-Once the server is up and the MCP client is connected, retry `get_taskboard` to verify. If it returns `KB_IDENTITY_LOCKED`, the server is running but the user hasn't unlocked — send them to the UI or `POST /api/identity/unlock`.
+Once the server is up and the MCP client is connected, retry `get_taskboard` to verify. If it returns `KB_IDENTITY_LOCKED`, the server is running but the user has not unlocked the board. Ask the user to unlock it in the local browser UI.
 
 ### Common setup failures
 
@@ -264,7 +264,7 @@ When an MCP tool call fails, expect a JSON error payload with:
 Standard codes:
 
 - `KB_IDENTITY_LOCKED`: team write attempted before identity unlock.
-	Tell user: unlock identity in the local UI/API (`/api/identity/unlock`) or set `TASKBOARD_EVM_PRIVATE_KEY`, then retry.
+	Tell user: unlock identity in the local browser UI, then retry.
 - `KB_IDENTITY_SETUP_REQUIRED`: team mode missing usable identity source.
 	Tell user: run `npm run identity:onboard`, then unlock identity and retry.
 - `KB_IDENTITY_NOT_REGISTERED`: identity address is not in team users table.

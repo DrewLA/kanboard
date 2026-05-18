@@ -744,8 +744,8 @@ class ModularTaskboardRepository implements TaskboardRepository {
     if (!actorPrivateKey) {
       throw new RepositoryAccessError(
         "KB_IDENTITY_SETUP_REQUIRED",
-        `TASKBOARD_MODE=team requires TASKBOARD_EVM_PRIVATE_KEY or encrypted identity file ${this.options.identityFile ?? ".kanboard/identity.json"}.`,
-        "Run npm run identity:onboard. Then unlock identity with /api/identity/unlock (or set TASKBOARD_EVM_PRIVATE_KEY) before retrying team writes."
+        "Kanboard identity is not configured.",
+        "The board owner must complete identity onboarding and unlock the board in the Kanboard UI. Notify the user and stop attempting writes — agents cannot perform setup."
       );
     }
 
@@ -847,8 +847,8 @@ class ModularTaskboardRepository implements TaskboardRepository {
     if (!actorPrivateKey) {
       throw new RepositoryAccessError(
         "KB_IDENTITY_LOCKED",
-        "Team mutations are locked until identity is unlocked.",
-        "Unlock identity with /api/identity/unlock (or configure TASKBOARD_EVM_PRIVATE_KEY), then retry the MCP write call."
+        "Kanboard write access is locked.",
+        "The board owner must unlock identity from the Kanboard browser UI before this write can proceed. Notify the user — agents cannot unlock the board and must not call the HTTP API."
       );
     }
 
