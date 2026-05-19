@@ -136,7 +136,14 @@ function ExpandableTextarea({ name, rows, defaultValue }) {
 
   return html`
     <div className="textarea-wrap">
-      <textarea ref=${taRef} name=${name} rows=${rows} defaultValue=${defaultValue}></textarea>
+      <textarea
+        ref=${taRef}
+        name=${name}
+        rows=${rows}
+        defaultValue=${defaultValue}
+        onClick=${openLinkAtCaret}
+        title="⌘+click a link to open it"
+      ></textarea>
       <button
         type="button"
         className="textarea-expand-btn"
@@ -154,12 +161,60 @@ function ExpandableTextarea({ name, rows, defaultValue }) {
   `;
 }
 
+// ---- Link recognition ----
+
+const URL_RE = /(https?:\/\/[^\s<>"']+)/g;
+const TRAILING_PUNCT = /[.,;:!?)\]}'"]+$/;
+
+function stripTrailingPunct(url) {
+  const m = url.match(TRAILING_PUNCT);
+  return m ? url.slice(0, url.length - m[0].length) : url;
+}
+
+function linkifyText(text) {
+  if (typeof text !== "string" || !text) return text || "";
+  const out = [];
+  let lastIdx = 0;
+  let key = 0;
+  let m;
+  URL_RE.lastIndex = 0;
+  while ((m = URL_RE.exec(text)) !== null) {
+    if (m.index > lastIdx) out.push(text.slice(lastIdx, m.index));
+    const raw = m[0];
+    const url = stripTrailingPunct(raw);
+    if (url.length < raw.length) URL_RE.lastIndex -= raw.length - url.length;
+    out.push(html`<a key=${`u${key++}`} href=${url} target="_blank" rel="noopener noreferrer" className="linkified-link" onClick=${(e) => e.stopPropagation()}>${url}</a>`);
+    lastIdx = m.index + url.length;
+  }
+  if (lastIdx < text.length) out.push(text.slice(lastIdx));
+  return out.length === 0 ? text : out;
+}
+
+function openLinkAtCaret(e) {
+  if (!(e.metaKey || e.ctrlKey)) return;
+  const el = e.currentTarget;
+  const text = el.value;
+  const pos = el.selectionStart;
+  if (typeof pos !== "number" || !text) return;
+  URL_RE.lastIndex = 0;
+  let m;
+  while ((m = URL_RE.exec(text)) !== null) {
+    const url = stripTrailingPunct(m[0]);
+    const start = m.index;
+    const end = start + url.length;
+    if (pos >= start && pos <= end) {
+      e.preventDefault();
+      window.open(url, "_blank", "noopener,noreferrer");
+      return;
+    }
+  }
+}
+
 // ---- Form body builder ----
 
-function fieldMentionTag(present) {
-  return present
-    ? html`<span className="form-field-mention" title="You were mentioned here">@</span>`
-    : null;
+function fieldLabel(text, mentioned) {
+  if (!mentioned) return text;
+  return html`<span className="form-label-row">${text}<span className="form-field-mention" title="You were mentioned here">@</span></span>`;
 }
 
 function buildModalBody(modal, taskboard, activeFilters, lookup, onSwitchModal, usersMap, hasFieldMention) {
@@ -289,9 +344,9 @@ function buildModalBody(modal, taskboard, activeFilters, lookup, onSwitchModal, 
           actionItem=${{ label: "New Story", onAction: () => onSwitchModal("create-story", "Create Story") }}
         />
       </label>
-      <label>Title${fieldMentionTag(check(t.title))}<input name="title" defaultValue=${sv.title ?? t.title ?? ""} required /></label>
-      <label>Summary${fieldMentionTag(check(t.summary))}<${ExpandableTextarea} name="summary" rows="4" defaultValue=${sv.summary ?? t.summary ?? ""} /></label>
-      <label>Implementation notes${fieldMentionTag(check(t.implementationNotes))}<${ExpandableTextarea} name="implementationNotes" rows="4" defaultValue=${sv.implementationNotes ?? t.implementationNotes ?? ""} /></label>
+      <label>${fieldLabel("Title", check(t.title))}<input name="title" defaultValue=${sv.title ?? t.title ?? ""} required onClick=${openLinkAtCaret} /></label>
+      <label>${fieldLabel("Summary", check(t.summary))}<${ExpandableTextarea} name="summary" rows="4" defaultValue=${sv.summary ?? t.summary ?? ""} /></label>
+      <label>${fieldLabel("Implementation notes", check(t.implementationNotes))}<${ExpandableTextarea} name="implementationNotes" rows="4" defaultValue=${sv.implementationNotes ?? t.implementationNotes ?? ""} /></label>
       <div className="form-row">
         <label>Estimate<input name="estimate" defaultValue=${sv.estimate ?? t.estimate ?? ""} /></label>
         <label>Tags (comma-separated)<input name="tags" defaultValue=${sv.tags ?? (t.tags || []).join(", ")} /></label>
@@ -448,7 +503,7 @@ function CommentsPane({ taskId, comments, currentUser, usersMap, onMentionInput,
                       >${isConfirming ? "Sure?" : "✕"}</button>
                     ` : null}
                   </div>
-                  <p className="comment-body">${c.body}</p>
+                  <p className="comment-body">${linkifyText(c.body)}</p>
                   <div className="comment-bubble-foot">
                     <span className="comment-time">${formatRelativeTime(c.createdAt) || "just now"}</span>
                   </div>
@@ -464,9 +519,11 @@ function CommentsPane({ taskId, comments, currentUser, usersMap, onMentionInput,
           placeholder="Add a comment… (⌘↵ to post)"
           value=${body}
           onInput=${(e) => { setBody(e.currentTarget.value); onMentionInput(e, setBody); }}
+          onClick=${openLinkAtCaret}
           onKeyDown=${(e) => {
             if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit(e);
           }}
+          title="⌘+click a link to open it"
         ></textarea>
         <button
           className=${`button button-solid${posting ? " button--loading" : ""}`}
