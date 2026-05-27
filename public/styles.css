@@ -444,6 +444,75 @@ body {
   padding: 8px 12px;
 }
 
+.board-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 180px;
+  min-width: 140px;
+  max-width: 320px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.04);
+  padding: 7px 10px;
+  transition: border-color 140ms ease;
+  cursor: text;
+}
+
+.board-search:focus-within {
+  border-color: var(--line-strong);
+}
+
+.board-search-icon {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+/* Use compound selector to beat the global `input` rule without !important */
+.board-search .board-search-input {
+  flex: 1;
+  width: 0;
+  min-width: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text);
+  padding: 0;
+  outline: none;
+  -webkit-appearance: none;
+  appearance: none;
+  box-shadow: none;
+}
+
+.board-search .board-search-input::placeholder {
+  color: var(--text-muted);
+}
+
+.board-search-clear {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  transition: color 140ms ease, background 140ms ease;
+}
+
+.board-search-clear:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.1);
+}
+
 select,
 input,
 textarea {

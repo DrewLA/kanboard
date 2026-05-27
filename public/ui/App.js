@@ -120,7 +120,7 @@ export function App() {
   const [activeView, setActiveView] = useState(parseHashView());
   const [health, setHealth] = useState(null);
   const [taskboard, setTaskboard] = useState(null);
-  const [filters, setFilters] = useState({ epicId: "", featureId: "" });
+  const [filters, setFilters] = useState({ epicId: "", featureId: "", query: "" });
   const [expanded, setExpanded] = useState(new Set());
   const [modalStack, setModalStack] = useState([]);
   const [confirmState, setConfirmState] = useState(null);

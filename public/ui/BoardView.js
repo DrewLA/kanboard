@@ -5,6 +5,32 @@ import { CustomSelect } from "./CustomSelect.js";
 
 const html = htm.bind(React.createElement);
 
+// Build a single lowercased haystack string per task, covering every text
+// element a user might reasonably search for: the task itself, its parent
+// epic/feature/story, tags, assignee, status and priority labels.
+function buildHaystack(ctx, usersMap) {
+  const { epic, feature, story, task } = ctx;
+  const assignee = task.assignedTo ? usersMap?.[task.assignedTo]?.name : "";
+  return [
+    task.title,
+    task.summary,
+    task.alias,
+    task.implementationNotes,
+    task.estimate,
+    task.priority,
+    task.status,
+    statusLabels[task.status],
+    ...(task.tags || []),
+    epic.title,
+    feature.title,
+    story.title,
+    assignee,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
 function userInitials(name) {
   if (!name) return "?";
   const parts = name.trim().split(/\s+/);
@@ -51,18 +77,32 @@ export function BoardView({ taskboard, filters, onFilterChange, onAddTask, onTas
     ? epics.find((e) => e.id === filters.epicId)?.features || []
     : epics.flatMap((e) => e.features);
 
-  const contexts = allContexts.filter(({ epic, feature }) => {
-    if (filters.epicId && epic.id !== filters.epicId) return false;
-    if (filters.featureId && feature.id !== filters.featureId) return false;
-    return true;
-  });
+  // Precompute the search haystack for each context once per data change so
+  // typing only re-runs cheap string matching, not field gathering.
+  const indexed = useMemo(
+    () => allContexts.map((ctx) => ({ ctx, haystack: buildHaystack(ctx, usersMap) })),
+    [allContexts, usersMap]
+  );
+
+  // Split the query into terms; every term must match (AND), so "auth high"
+  // narrows to high-priority auth work regardless of field or word order.
+  const terms = (filters.query || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+
+  const contexts = indexed
+    .filter(({ ctx, haystack }) => {
+      if (filters.epicId && ctx.epic.id !== filters.epicId) return false;
+      if (filters.featureId && ctx.feature.id !== filters.featureId) return false;
+      if (terms.length && !terms.every((t) => haystack.includes(t))) return false;
+      return true;
+    })
+    .map(({ ctx }) => ctx);
 
   return html`
     <section className="view-shell view-shell--board">
       <div className="panel-toolbar glass-panel">
         <${CustomSelect}
           value=${filters.epicId}
-          onChange=${(v) => onFilterChange({ epicId: v, featureId: "" })}
+          onChange=${(v) => onFilterChange({ ...filters, epicId: v, featureId: "" })}
           options=${[{ value: "", label: "All Epics" }, ...epics.map((e) => ({ value: e.id, label: e.title }))]}
           placeholder="All Epics"
           actionItem=${{ label: "New Epic", onAction: onAddEpic }}
@@ -74,6 +114,29 @@ export function BoardView({ taskboard, filters, onFilterChange, onAddTask, onTas
           placeholder="All Features"
           actionItem=${{ label: "New Feature", onAction: onAddFeature }}
         />
+        <div className="board-search">
+          <svg className="board-search-icon" width="13" height="13" viewBox="0 0 12 12" aria-hidden="true">
+            <circle cx="5" cy="5" r="3.5" stroke="currentColor" stroke-width="1.4" fill="none" />
+            <path d="M8 8l2.5 2.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+          </svg>
+          <input
+            className="board-search-input"
+            type="text"
+            placeholder="Search tasks..."
+            aria-label="Search tasks"
+            value=${filters.query || ""}
+            onInput=${(e) => onFilterChange({ ...filters, query: e.target.value })}
+            onKeyDown=${(e) => e.key === "Escape" && filters.query && onFilterChange({ ...filters, query: "" })}
+          />
+          ${filters.query
+            ? html`<button
+                type="button"
+                className="board-search-clear"
+                aria-label="Clear search"
+                onClick=${() => onFilterChange({ ...filters, query: "" })}
+              >×</button>`
+            : null}
+        </div>
         <button className="button button-solid" onClick=${onAddTask}>+ Task</button>
       </div>
 
@@ -150,7 +213,7 @@ export function BoardView({ taskboard, filters, onFilterChange, onAddTask, onTas
               })}
             </div>
           `
-        : html`<p className="empty-major">No tasks match the current filter.</p>`}
+        : html`<p className="empty-major">${terms.length ? `No tasks match “${filters.query.trim()}”.` : "No tasks match the current filter."}</p>`}
     </section>
   `;
 }
