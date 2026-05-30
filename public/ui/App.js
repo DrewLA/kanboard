@@ -580,12 +580,13 @@ export function App() {
   const refreshSafe = () => reload({ showSpinner: true }).catch((err) => setFlashError(getErrorMessage(err)));
   const boardBrief = taskboard?.boardBrief || {};
   const showLoadingShell = (!taskboard && !needsUnlock) || unlockRefreshing;
+  const overlayOpen = modalStack.length > 0 || Boolean(confirmState) || needsUnlock;
 
 
   // --- Skeleton loading logic ---
   if (showLoadingShell) {
     return html`
-      <main className="app-shell">
+      <main className=${`app-shell${overlayOpen ? " app-shell--overlay-open" : ""}`}>
         <${Header}
           productName="Kanboard"
           health=${health}
@@ -610,7 +611,7 @@ export function App() {
   }
 
   return html`
-    <main className="app-shell">
+    <main className=${`app-shell${overlayOpen ? " app-shell--overlay-open" : ""}`}>
       <div className="ambient ambient-a"></div>
       <div className="ambient ambient-b"></div>
       ${flashError ? html`

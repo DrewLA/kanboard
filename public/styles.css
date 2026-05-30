@@ -82,6 +82,17 @@ body {
   min-height: 100vh;
   padding: 18px;
   position: relative;
+  isolation: isolate;
+}
+
+.app-shell--overlay-open .ambient {
+  opacity: 0.12;
+}
+
+.app-shell--overlay-open .glass-panel {
+  background: rgba(10, 18, 38, 0.72);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 .ambient {
