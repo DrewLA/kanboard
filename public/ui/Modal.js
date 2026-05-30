@@ -101,9 +101,60 @@ function MentionMenu({ mentionState, filtered, onSelect, onClose }) {
 
 // ---- Expandable textarea ----
 
-function ExpandableTextarea({ name, rows, defaultValue }) {
+function ExpandableTextarea({ name, rows, defaultValue, inputRef, markdownPreview = false, previewPlaceholder = "" }) {
   const taRef = useRef(null);
+  const previewRef = useRef(null);
   const [expanded, setExpanded] = useState(false);
+  const [editing, setEditing] = useState(!markdownPreview);
+  const [previewValue, setPreviewValue] = useState(defaultValue || "");
+
+  useEffect(() => {
+    setPreviewValue(defaultValue || "");
+    setEditing(!markdownPreview);
+    if (taRef.current) {
+      taRef.current.value = defaultValue || "";
+      taRef.current.style.height = "";
+      taRef.current.style.overflowY = "";
+    }
+    setExpanded(false);
+  }, [name, defaultValue, markdownPreview]);
+
+  function setRefs(node) {
+    taRef.current = node;
+    if (!inputRef) return;
+    if (typeof inputRef === "function") inputRef(node);
+    else inputRef.current = node;
+  }
+
+  function getPreviewHeight() {
+    const ta = taRef.current;
+    const preview = previewRef.current;
+    if (!preview || !ta) return ta?.scrollHeight || 0;
+    // The preview is anchored top+bottom, so it stretches to the textarea's
+    // current height — reading scrollHeight directly would just echo that box.
+    // Release the bottom anchor (preview is absolute, so this doesn't change
+    // the textarea's height or the overlay's scroll position) to read the
+    // markdown's intrinsic height, then restore.
+    const saved = preview.style.bottom;
+    preview.style.bottom = "auto";
+    const height = preview.scrollHeight + 2;
+    preview.style.bottom = saved;
+    return height;
+  }
+
+  useEffect(() => {
+    const ta = taRef.current;
+    if (!markdownPreview || !ta || !expanded) return;
+
+    if (editing) {
+      ta.style.height = ta.scrollHeight + "px";
+      ta.style.overflowY = "hidden";
+      return;
+    }
+
+    ta.style.height = getPreviewHeight() + "px";
+    ta.style.overflowY = "hidden";
+  }, [markdownPreview, editing, expanded, previewValue]);
 
   function toggle(e) {
     e.preventDefault();
@@ -117,7 +168,7 @@ function ExpandableTextarea({ name, rows, defaultValue }) {
       ta.style.height = fromH + "px";
       void ta.offsetHeight; // force reflow before transition
       ta.style.transition = "height 280ms cubic-bezier(0.4, 0, 0.2, 1)";
-      ta.style.height = ta.scrollHeight + "px";
+      ta.style.height = ((markdownPreview && !editing) ? getPreviewHeight() : ta.scrollHeight) + "px";
       ta.style.overflowY = "hidden"; // lock internal scroll; outer overlay scrolls
       setExpanded(true);
       setTimeout(() => { if (ta) ta.style.transition = ""; }, 290);
@@ -135,14 +186,26 @@ function ExpandableTextarea({ name, rows, defaultValue }) {
   }
 
   return html`
-    <div className="textarea-wrap">
+    <div className=${`textarea-wrap${markdownPreview ? ` markdown-textarea-wrap ${editing ? "markdown-textarea-wrap--editing" : "markdown-textarea-wrap--preview"}` : ""}`}>
+      ${markdownPreview
+        ? html`
+          <div className="markdown-textarea-preview" aria-hidden="true" ref=${previewRef}>
+            <${MarkdownPreview} value=${previewValue} placeholder=${previewPlaceholder} />
+          </div>
+        `
+        : null}
       <textarea
-        ref=${taRef}
+        ref=${setRefs}
         name=${name}
         rows=${rows}
         defaultValue=${defaultValue}
-        onClick=${openLinkAtCaret}
-        title="⌘+click a link to open it"
+        readOnly=${markdownPreview && !editing}
+        className=${markdownPreview ? `markdown-textarea-input ${editing ? "markdown-textarea-input--editing" : "markdown-textarea-input--preview"}` : undefined}
+        onFocus=${markdownPreview ? () => setEditing(true) : undefined}
+        onBlur=${markdownPreview ? () => setEditing(false) : undefined}
+        onInput=${markdownPreview ? (event) => setPreviewValue(event.currentTarget.value) : undefined}
+        onClick=${markdownPreview ? (editing ? openLinkAtCaret : undefined) : openLinkAtCaret}
+        title=${markdownPreview ? (editing ? "⌘+click a link to open it" : undefined) : "⌘+click a link to open it"}
       ></textarea>
       <button
         type="button"
@@ -159,6 +222,146 @@ function ExpandableTextarea({ name, rows, defaultValue }) {
       </button>
     </div>
   `;
+}
+
+function renderInlineMarkdown(text, keyPrefix = "md") {
+  if (typeof text !== "string" || !text) return text || "";
+
+  const parts = [];
+  const tokenRe = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|`([^`]+)`|\*\*([^*]+)\*\*|\*([^*]+)\*|(https?:\/\/[^\s<>"']+)/g;
+  let lastIdx = 0;
+  let key = 0;
+  let match;
+
+  while ((match = tokenRe.exec(text)) !== null) {
+    if (match.index > lastIdx) parts.push(text.slice(lastIdx, match.index));
+
+    if (match[1] && match[2]) {
+      parts.push(html`<a key=${`${keyPrefix}-${key++}`} href=${match[2]} target="_blank" rel="noopener noreferrer" className="linkified-link">${match[1]}</a>`);
+    } else if (match[3]) {
+      parts.push(html`<code key=${`${keyPrefix}-${key++}`}>${match[3]}</code>`);
+    } else if (match[4]) {
+      parts.push(html`<strong key=${`${keyPrefix}-${key++}`}>${match[4]}</strong>`);
+    } else if (match[5]) {
+      parts.push(html`<em key=${`${keyPrefix}-${key++}`}>${match[5]}</em>`);
+    } else if (match[6]) {
+      const url = stripTrailingPunct(match[6]);
+      const trailing = match[6].slice(url.length);
+      parts.push(html`<a key=${`${keyPrefix}-${key++}`} href=${url} target="_blank" rel="noopener noreferrer" className="linkified-link">${url}</a>`);
+      if (trailing) parts.push(trailing);
+    }
+
+    lastIdx = match.index + match[0].length;
+  }
+
+  if (lastIdx < text.length) parts.push(text.slice(lastIdx));
+  return parts.length === 0 ? text : parts;
+}
+
+function isMarkdownBlockStart(line) {
+  return /^(#{1,3}\s+|[-*+]\s+|\d+\.\s+|>\s?)/.test(line);
+}
+
+function renderMarkdownBlocks(value) {
+  const lines = String(value || "").replace(/\r\n?/g, "\n").split("\n");
+  const blocks = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const raw = lines[index];
+    const trimmed = raw.trim();
+
+    if (!trimmed) {
+      index += 1;
+      continue;
+    }
+
+    const heading = trimmed.match(/^(#{1,3})\s+(.*)$/);
+    if (heading) {
+      const Tag = `h${heading[1].length}`;
+      const blockKey = `block-${blocks.length}`;
+      blocks.push(html`<${Tag} key=${blockKey}>${renderInlineMarkdown(heading[2], blockKey)}</${Tag}>`);
+      index += 1;
+      continue;
+    }
+
+    if (/^[-*+]\s+/.test(trimmed)) {
+      const items = [];
+      while (index < lines.length) {
+        const itemLine = lines[index].trim();
+        const itemMatch = itemLine.match(/^[-*+]\s+(.*)$/);
+        if (!itemMatch) break;
+        items.push(itemMatch[1]);
+        index += 1;
+      }
+      const blockKey = `block-${blocks.length}`;
+      blocks.push(html`
+        <ul key=${blockKey}>
+          ${items.map((item, itemIndex) => html`<li key=${`${blockKey}-${itemIndex}`}>${renderInlineMarkdown(item, `${blockKey}-${itemIndex}`)}</li>`)}
+        </ul>
+      `);
+      continue;
+    }
+
+    if (/^\d+\.\s+/.test(trimmed)) {
+      const items = [];
+      while (index < lines.length) {
+        const itemLine = lines[index].trim();
+        const itemMatch = itemLine.match(/^\d+\.\s+(.*)$/);
+        if (!itemMatch) break;
+        items.push(itemMatch[1]);
+        index += 1;
+      }
+      const blockKey = `block-${blocks.length}`;
+      blocks.push(html`
+        <ol key=${blockKey}>
+          ${items.map((item, itemIndex) => html`<li key=${`${blockKey}-${itemIndex}`}>${renderInlineMarkdown(item, `${blockKey}-${itemIndex}`)}</li>`)}
+        </ol>
+      `);
+      continue;
+    }
+
+    if (/^>\s?/.test(trimmed)) {
+      const quoteLines = [];
+      while (index < lines.length) {
+        const itemLine = lines[index].trim();
+        const itemMatch = itemLine.match(/^>\s?(.*)$/);
+        if (!itemMatch) break;
+        quoteLines.push(itemMatch[1]);
+        index += 1;
+      }
+      const quoteText = quoteLines.join(" ").trim();
+      const blockKey = `block-${blocks.length}`;
+      blocks.push(html`<blockquote key=${blockKey}>${renderInlineMarkdown(quoteText, blockKey)}</blockquote>`);
+      continue;
+    }
+
+    const paragraph = [];
+    while (index < lines.length) {
+      const line = lines[index].trim();
+      if (!line || isMarkdownBlockStart(line)) break;
+      paragraph.push(line);
+      index += 1;
+    }
+
+    if (paragraph.length > 0) {
+      const blockKey = `block-${blocks.length}`;
+      blocks.push(html`<p key=${blockKey}>${renderInlineMarkdown(paragraph.join(" "), blockKey)}</p>`);
+      continue;
+    }
+
+    index += 1;
+  }
+
+  return blocks;
+}
+
+function MarkdownPreview({ value, placeholder = "Click to edit" }) {
+  const blocks = renderMarkdownBlocks(value);
+  if (blocks.length === 0) {
+    return html`<p className="markdown-field-placeholder">${placeholder}</p>`;
+  }
+  return html`${blocks}`;
 }
 
 // ---- Link recognition ----
@@ -345,8 +548,24 @@ function buildModalBody(modal, taskboard, activeFilters, lookup, onSwitchModal, 
         />
       </label>
       <label>${fieldLabel("Title", check(t.title))}<input name="title" defaultValue=${sv.title ?? t.title ?? ""} required onClick=${openLinkAtCaret} /></label>
-      <label>${fieldLabel("Summary", check(t.summary))}<${ExpandableTextarea} name="summary" rows="4" defaultValue=${sv.summary ?? t.summary ?? ""} /></label>
-      <label>${fieldLabel("Implementation notes", check(t.implementationNotes))}<${ExpandableTextarea} name="implementationNotes" rows="4" defaultValue=${sv.implementationNotes ?? t.implementationNotes ?? ""} /></label>
+      <div className="form-field">
+        <span>${fieldLabel("Summary", check(t.summary))}</span>
+        <${ExpandableTextarea}
+          name="summary"
+          rows="4"
+          defaultValue=${sv.summary ?? t.summary ?? ""}
+          markdownPreview=${modal.type === "edit-task"}
+        />
+      </div>
+      <div className="form-field">
+        <span>${fieldLabel("Implementation notes", check(t.implementationNotes))}</span>
+        <${ExpandableTextarea}
+          name="implementationNotes"
+          rows="4"
+          defaultValue=${sv.implementationNotes ?? t.implementationNotes ?? ""}
+          markdownPreview=${modal.type === "edit-task"}
+        />
+      </div>
       <div className="form-row">
         <label>Estimate<input name="estimate" defaultValue=${sv.estimate ?? t.estimate ?? ""} /></label>
         <label>Tags (comma-separated)<input name="tags" defaultValue=${sv.tags ?? (t.tags || []).join(", ")} /></label>

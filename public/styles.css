@@ -588,6 +588,111 @@ textarea {
   pointer-events: all;
 }
 
+.markdown-textarea-wrap {
+  isolation: isolate;
+}
+
+.markdown-textarea-preview {
+  position: absolute;
+  inset: 1px 1px 1px 1px;
+  z-index: 1;
+  padding: 10px 13px 18px;
+  border-radius: calc(var(--radius-sm) - 1px);
+  overflow: hidden;
+  pointer-events: none;
+  color: var(--text);
+}
+
+.markdown-textarea-preview > :first-child {
+  margin-top: 0;
+}
+
+.markdown-textarea-preview > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-textarea-preview h1,
+.markdown-textarea-preview h2,
+.markdown-textarea-preview h3,
+.markdown-textarea-preview p,
+.markdown-textarea-preview ul,
+.markdown-textarea-preview ol,
+.markdown-textarea-preview blockquote {
+  margin: 0 0 10px;
+}
+
+.markdown-textarea-preview h1,
+.markdown-textarea-preview h2,
+.markdown-textarea-preview h3 {
+  color: #f5f9ff;
+  line-height: 1.25;
+}
+
+.markdown-textarea-preview h1 {
+  font-size: 1.05rem;
+}
+
+.markdown-textarea-preview h2 {
+  font-size: 0.98rem;
+}
+
+.markdown-textarea-preview h3 {
+  font-size: 0.92rem;
+}
+
+.markdown-textarea-preview ul,
+.markdown-textarea-preview ol {
+  padding-left: 20px;
+}
+
+.markdown-textarea-preview blockquote {
+  padding-left: 12px;
+  border-left: 2px solid rgba(77, 168, 255, 0.4);
+  color: var(--text-muted);
+}
+
+.markdown-textarea-preview code {
+  padding: 1px 5px;
+  border-radius: 6px;
+  background: rgba(6, 18, 48, 0.85);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.92em;
+}
+
+.markdown-textarea-wrap--preview textarea {
+  position: relative;
+  z-index: 2;
+  background: rgba(255, 255, 255, 0.03);
+  color: transparent;
+  caret-color: transparent;
+}
+
+.markdown-textarea-wrap--preview textarea::selection {
+  background: transparent;
+}
+
+.markdown-textarea-wrap--editing .markdown-textarea-preview {
+  opacity: 0;
+}
+
+.markdown-textarea-wrap--editing textarea {
+  position: relative;
+  z-index: 2;
+}
+
+.markdown-field-placeholder {
+  color: var(--text-muted);
+}
+
+.form-field {
+  display: grid;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
 .textarea-expand-btn:hover {
   background: rgba(255, 255, 255, 0.14);
   color: #ffffff;
