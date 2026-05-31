@@ -25,7 +25,11 @@ const envSchema = z.object({
   TASKBOARD_PORT: z.coerce.number().int().positive().default(8787),
   TASKBOARD_REDIS_KEY: z.string().min(1).default("taskboard:main"),
   UPSTASH_REDIS_REST_URL: optionalNonEmptyString,
-  UPSTASH_REDIS_REST_TOKEN: optionalNonEmptyString
+  UPSTASH_REDIS_REST_TOKEN: optionalNonEmptyString,
+  R2_ENDPOINT: optionalNonEmptyString,
+  R2_ACCESS_KEY_ID: optionalNonEmptyString,
+  R2_SECRET_ACCESS_KEY: optionalNonEmptyString,
+  R2_BUCKET: optionalNonEmptyString
 });
 
 export type AppConfig = {
@@ -44,6 +48,10 @@ export type AppConfig = {
   redisKey: string;
   redisUrl?: string;
   redisToken?: string;
+  r2Endpoint?: string;
+  r2AccessKeyId?: string;
+  r2SecretAccessKey?: string;
+  r2Bucket?: string;
 };
 
 function resolveMode(parsed: z.infer<typeof envSchema>): AppConfig["mode"] {
@@ -90,7 +98,47 @@ export function getAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     port: parsed.TASKBOARD_PORT,
     redisKey: parsed.TASKBOARD_REDIS_KEY,
     redisUrl: parsed.UPSTASH_REDIS_REST_URL,
-    redisToken: parsed.UPSTASH_REDIS_REST_TOKEN
+    redisToken: parsed.UPSTASH_REDIS_REST_TOKEN,
+    r2Endpoint: parsed.R2_ENDPOINT,
+    r2AccessKeyId: parsed.R2_ACCESS_KEY_ID,
+    r2SecretAccessKey: parsed.R2_SECRET_ACCESS_KEY,
+    r2Bucket: parsed.R2_BUCKET
+  };
+}
+
+export function assertR2Config(
+  config: AppConfig
+): Required<Pick<AppConfig, "r2Endpoint" | "r2AccessKeyId" | "r2SecretAccessKey" | "r2Bucket">> {
+  const missingKeys: string[] = [];
+
+  if (!config.r2Endpoint) {
+    missingKeys.push("R2_ENDPOINT");
+  }
+
+  if (!config.r2AccessKeyId) {
+    missingKeys.push("R2_ACCESS_KEY_ID");
+  }
+
+  if (!config.r2SecretAccessKey) {
+    missingKeys.push("R2_SECRET_ACCESS_KEY");
+  }
+
+  if (!config.r2Bucket) {
+    missingKeys.push("R2_BUCKET");
+  }
+
+  if (missingKeys.length > 0) {
+    throw new Error(
+      `R2 uploads require these environment variables: ${missingKeys.join(", ")}. ` +
+      "Set them in .env to enable task attachments."
+    );
+  }
+
+  return {
+    r2Endpoint: config.r2Endpoint!,
+    r2AccessKeyId: config.r2AccessKeyId!,
+    r2SecretAccessKey: config.r2SecretAccessKey!,
+    r2Bucket: config.r2Bucket!
   };
 }
 

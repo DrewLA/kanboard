@@ -7,6 +7,8 @@ export const workItemTypeValues = ["feature", "task"] as const;
 export const workLinkKindValues = ["blocks", "relates-to"] as const;
 export const boardNodeTypeValues = ["epic", "feature", "story", "task"] as const;
 export const commentKindValues = ["note", "requirement", "blocker"] as const;
+export const taskAttachmentKindValues = ["image", "file", "mockup"] as const;
+export const taskAttachmentUploadKindValues = ["image", "mockup"] as const;
 
 export type WorkStatus = (typeof workStatusValues)[number];
 export type Priority = (typeof priorityValues)[number];
@@ -14,6 +16,7 @@ export type WorkItemType = (typeof workItemTypeValues)[number];
 export type WorkLinkKind = (typeof workLinkKindValues)[number];
 export type BoardNodeType = (typeof boardNodeTypeValues)[number];
 export type CommentKind = (typeof commentKindValues)[number];
+export type TaskAttachmentKind = (typeof taskAttachmentKindValues)[number];
 
 const idSchema = z.string().min(1);
 const statusSchema = z.enum(workStatusValues);
@@ -22,6 +25,8 @@ const workItemTypeSchema = z.enum(workItemTypeValues);
 const workLinkKindSchema = z.enum(workLinkKindValues);
 const boardNodeTypeSchema = z.enum(boardNodeTypeValues);
 const commentKindSchema = z.enum(commentKindValues);
+const taskAttachmentKindSchema = z.enum(taskAttachmentKindValues);
+const taskAttachmentUploadKindSchema = z.enum(taskAttachmentUploadKindValues);
 const aliasInputSchema = z.string().min(1).max(80);
 
 const baseCreateSchema = z.object({
@@ -37,6 +42,18 @@ const assigneeSchema = z.preprocess(
   (value) => value === null || value === "" ? undefined : value,
   z.string().max(120).optional()
 );
+const taskAttachmentSchema = z.object({
+  id: idSchema,
+  kind: taskAttachmentKindSchema,
+  name: z.string().min(1).max(240),
+  key: z.string().min(1).max(2000),
+  contentType: z.string().min(1).max(200),
+  size: z.number().int().nonnegative().optional(),
+  fileCount: z.number().int().positive().optional(),
+  entryPath: z.string().min(1).max(1000).optional(),
+  createdAt: z.string().min(1).max(120),
+  uploadedBy: z.string().max(120).optional()
+});
 
 export const boardBriefPatchSchema = z.object({
   productName: z.string().min(1).max(120).optional(),
@@ -84,6 +101,7 @@ export const createTaskInputSchema = baseCreateSchema.extend({
   implementationNotes: z.string().max(4000).default(""),
   estimate: z.string().max(120).default(""),
   tags: z.array(z.string().max(40)).default([]),
+  attachments: z.array(taskAttachmentSchema).default([]),
   assignedTo: assigneeSchema
 }).refine((value) => value.storyId || value.storyAlias, {
   message: "Provide storyId or storyAlias.",
@@ -93,7 +111,53 @@ export const updateTaskInputSchema = baseUpdateSchema.extend({
   implementationNotes: z.string().max(4000).optional(),
   estimate: z.string().max(120).optional(),
   tags: z.array(z.string().max(40)).optional(),
+  attachments: z.array(taskAttachmentSchema).optional(),
   assignedTo: assigneeSchema
+});
+
+export const createTaskUploadInputSchema = z.object({
+  kind: taskAttachmentUploadKindSchema,
+  fileName: z.string().min(1).max(240),
+  contentType: z.string().min(1).max(200),
+  size: z.coerce.number().int().nonnegative().optional(),
+  relativePath: z.string().min(1).max(1000).optional(),
+  attachmentId: z.string().min(1).max(120).optional()
+}).superRefine((value, ctx) => {
+  const fileName = value.fileName.toLowerCase();
+  const contentType = value.contentType.toLowerCase();
+
+  if (value.kind === "mockup") {
+    const allowedMockupExtensions = [".html", ".svg", ".png"];
+    const allowedMockupTypes = new Set(["text/html", "image/svg+xml", "image/png"]);
+
+    if (!allowedMockupExtensions.some((extension) => fileName.endsWith(extension))) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Mockups must be an .html, .svg, or .png file.",
+        path: ["fileName"]
+      });
+    }
+
+    if (!allowedMockupTypes.has(contentType)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Mockups must use text/html, image/svg+xml, or image/png content types.",
+        path: ["contentType"]
+      });
+    }
+  }
+
+  if (value.kind === "image") {
+    const allowedImageExtensions = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif"];
+
+    if (!allowedImageExtensions.some((extension) => fileName.endsWith(extension)) || !contentType.startsWith("image/")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Images must be JPG, PNG, GIF, WebP, or AVIF.",
+        path: ["fileName"]
+      });
+    }
+  }
 });
 
 export const resolveNodeInputSchema = z.object({
@@ -178,6 +242,7 @@ export type CreateUserStoryInput = z.infer<typeof createUserStoryInputSchema>;
 export type UpdateUserStoryInput = z.infer<typeof updateUserStoryInputSchema>;
 export type CreateTaskInput = z.infer<typeof createTaskInputSchema>;
 export type UpdateTaskInput = z.infer<typeof updateTaskInputSchema>;
+export type CreateTaskUploadInput = z.infer<typeof createTaskUploadInputSchema>;
 export type CreateNodeCommentInput = z.infer<typeof createNodeCommentInputSchema>;
 export type UpdateNodeCommentInput = z.infer<typeof updateNodeCommentInputSchema>;
 export type CreateWorkLinkInput = z.infer<typeof createWorkLinkInputSchema>;
@@ -281,11 +346,25 @@ export interface UserStory extends BaseEntity {
   taskIds: string[];
 }
 
+export interface TaskAttachment {
+  id: string;
+  kind: TaskAttachmentKind;
+  name: string;
+  key: string;
+  contentType: string;
+  size?: number;
+  fileCount?: number;
+  entryPath?: string;
+  createdAt: string;
+  uploadedBy?: string;
+}
+
 export interface Task extends BaseEntity {
   storyId: string;
   implementationNotes: string;
   estimate: string;
   tags: string[];
+  attachments: TaskAttachment[];
   assignedTo?: string;
 }
 
@@ -472,6 +551,17 @@ function normalizeEntityRecord<T extends BaseEntity>(
   return result;
 }
 
+function normalizeTaskAttachments(value: unknown): TaskAttachment[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((item) => {
+    const parsed = taskAttachmentSchema.safeParse(item);
+    return parsed.success ? [parsed.data] : [];
+  });
+}
+
 export function normalizeTaskboardDocument(value: unknown): TaskboardDocument {
   const document = (value ?? {}) as Partial<TaskboardDocument> & {
     boardBrief?: Partial<BoardBrief>;
@@ -508,7 +598,15 @@ export function normalizeTaskboardDocument(value: unknown): TaskboardDocument {
   const epics = normalizeEntityRecord(document.epics, usedAliases);
   const features = normalizeEntityRecord(document.features, usedAliases);
   const userStories = normalizeEntityRecord(document.userStories, usedAliases);
-  const tasks = normalizeEntityRecord(document.tasks, usedAliases);
+  const tasks = Object.fromEntries(
+    Object.entries(normalizeEntityRecord(document.tasks, usedAliases)).map(([id, task]) => [
+      id,
+      {
+        ...task,
+        attachments: normalizeTaskAttachments((task as Task).attachments)
+      }
+    ])
+  ) as Record<string, Task>;
 
   const legacyMetadata = typeof document.metadata === "object" && document.metadata !== null ? document.metadata : {};
   const rawBoardBrief = typeof document.boardBrief === "object" && document.boardBrief !== null ? document.boardBrief : legacyMetadata;

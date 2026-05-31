@@ -18,7 +18,7 @@ The board maintains one shared source of truth for:
 | `private-backup` | Local JSON state | DB used as hourly backup |
 | `team` | Shared remote DB | Yes — every member syncs through the same DB prefix |
 
-**Team mode makes every registered user an admin.** There is no per-user permission tiering; the shared DB connection string is the access boundary.
+**Team mode makes every registered user an admin.** There is no per-user permission tiering; the shared DB connection string is the access boundary and effective trust boundary for the shared board.
 
 State is versioned by row. Every mutation reads the current row version, applies changes, and increments the version. Conflicts are detected atomically and returned as `409` with full recovery guidance.
 
@@ -73,6 +73,15 @@ TASKBOARD_MODE=team
 TASKBOARD_DB_STRING=upstash;url=https://...;token=...;prefix=kanboard:main
 ```
 
+To enable task attachments backed by R2, also set:
+
+```ini
+R2_ENDPOINT=https://<your-r2-endpoint>
+R2_ACCESS_KEY_ID=...
+R2_SECRET_ACCESS_KEY=...
+R2_BUCKET=kanboard
+```
+
 The DB prefix scopes all keys in the shared database. Change it to create a separate board in the same DB instance.
 
 ### 3. Set up your identity
@@ -117,7 +126,46 @@ TASKBOARD_EVM_PRIVATE_KEY=...               # alternative to identity file (team
 TASKBOARD_BACKUP_INTERVAL_MINUTES=60         # for private-backup mode
 TASKBOARD_HOST=127.0.0.1
 TASKBOARD_PORT=8787
+R2_ENDPOINT=                                 # raw R2 S3 endpoint URL
+R2_ACCESS_KEY_ID=
+R2_SECRET_ACCESS_KEY=
+R2_BUCKET=kanboard
 ```
+
+## R2 setup
+
+The application-side integration is built in, but the one-time R2 account setup is still manual:
+
+1. Create an R2 bucket named `kanboard`.
+2. Add an R2 CORS rule that allows your frontend origin and the `PUT`, `GET`, and `HEAD` methods. For the default local UI, this is a working baseline:
+
+```json
+[
+	{
+		"AllowedOrigins": ["http://127.0.0.1:8787", "http://localhost:8787"],
+		"AllowedMethods": ["GET", "HEAD", "PUT"],
+		"AllowedHeaders": ["content-type"],
+		"ExposeHeaders": ["etag"],
+		"MaxAgeSeconds": 3600
+	}
+]
+```
+
+If you change `TASKBOARD_PORT`, update the origin list to match. When this rule is missing, the browser blocks the presigned upload before it reaches R2 and reports a CORS preflight failure.
+3. Copy the raw S3 endpoint your R2 provider gives you into `R2_ENDPOINT`. This avoids hardcoding any single account-id URL format and works with region or geo-specific endpoint variants.
+4. Copy the Access Key ID and Secret Access Key for that R2 bucket into `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY`.
+
+This code authenticates to the R2 S3-compatible API with AWS SigV4 using `R2_ACCESS_KEY_ID` plus `R2_SECRET_ACCESS_KEY`. There is no separate bearer auth token in this upload path, and the browser itself uses short-lived presigned URLs rather than direct credentials.
+
+The browser uploads directly to R2 using presigned URLs. The taskboard stores only attachment metadata and object keys in task records; it never stores file contents in Redis or local state.
+
+Attachment reads do not use a stored public object read URL. The UI fetches attachment content through the local taskboard server on `127.0.0.1`, which then streams the object from R2.
+
+That read path does **not** provide application-level confidentiality for the object itself. Uploaded files are not encrypted by this application before they reach R2, so anyone who can read the underlying R2 object data can still recover the plaintext attachment.
+
+In team mode, the shared DB connection string remains the primary trust boundary for board data and attachment metadata. If this project later adds attachment encryption and stores the shared decryption secret in the team DB, that same DB connection string would also become the decryption boundary.
+
+Until application-level encryption exists, treat the R2 bucket as plaintext object storage and proceed with caution.
 
 ## Commands
 
@@ -157,6 +205,7 @@ Hierarchy:
 - `GET|POST /api/features` — `GET|PATCH|DELETE /api/features/:featureId`
 - `GET|POST /api/stories` — `GET|PATCH|DELETE /api/stories/:storyId`
 - `GET|POST /api/tasks` — `GET|PATCH|DELETE /api/tasks/:taskId`
+- `POST /api/tasks/:taskId/upload-url` — create a presigned R2 upload URL for an image or mockup asset
 
 Coordination:
 

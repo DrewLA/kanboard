@@ -17,6 +17,7 @@ import {
   createEpicInputSchema,
   createFeatureInputSchema,
   createTaskInputSchema,
+  createTaskUploadInputSchema,
   createUserStoryInputSchema,
   createWorkLinkInputSchema,
   findNodesInputSchema,
@@ -31,6 +32,7 @@ import {
 import { buildMcpServer } from "./mcp-core";
 import { acquireHttpServerLock } from "./process-lock";
 import { RepositoryAccessError, RepositoryConflictError, createTaskboardRepository } from "./repository";
+import { R2ConfigError, buildTaskAttachmentKey, createTaskUploadUrl, getTaskAttachmentObject, normalizeAttachmentToken } from "./r2";
 import {
   NotFoundError,
   createNodeComment,
@@ -78,6 +80,11 @@ import { formatCreatingKanboardMessage, formatStartupError, formatTeamBoardEmpty
 
 function parseBody<T>(schema: { parse: (value: unknown) => T }, body: unknown): T {
   return schema.parse(body);
+}
+
+function formatContentDisposition(value: string, disposition: "inline" | "attachment"): string {
+  const sanitized = value.replace(/[\r\n"]/g, "-") || "download";
+  return `${disposition}; filename="${sanitized}"`;
 }
 
 const unlockIdentityInputSchema = z.object({
@@ -349,6 +356,11 @@ async function buildServer(config: AppConfig): Promise<FastifyInstance> {
       return;
     }
 
+    if (error instanceof R2ConfigError) {
+      reply.status(error.statusCode).send({ message: error.message });
+      return;
+    }
+
     app.log.error(error);
     reply.status(500).send({ message: "Unexpected server error." });
   });
@@ -542,6 +554,56 @@ async function buildServer(config: AppConfig): Promise<FastifyInstance> {
   );
   app.post("/api/tasks", async (request) => createTask(repository, parseBody(createTaskInputSchema, request.body)));
   app.get("/api/tasks/:taskId", async (request) => getTask(repository, (request.params as { taskId: string }).taskId));
+  app.post("/api/tasks/:taskId/upload-url", async (request) => {
+    const taskId = (request.params as { taskId: string }).taskId;
+    await getTask(repository, taskId);
+
+    const input = parseBody(createTaskUploadInputSchema, request.body);
+    const attachmentId = normalizeAttachmentToken(input.attachmentId ?? randomUUID());
+    const key = buildTaskAttachmentKey(taskId, attachmentId, input.kind, input.fileName, input.relativePath);
+
+    return createTaskUploadUrl(config, key, input.contentType);
+  });
+  app.get("/api/tasks/:taskId/attachments/:attachmentId/content", async (request, reply) => {
+    const { taskId, attachmentId } = request.params as { taskId: string; attachmentId: string };
+    const query = request.query as { download?: string };
+    const task = await getTask(repository, taskId);
+    const attachment = (task.attachments || []).find((entry) => entry.id === attachmentId);
+
+    if (!attachment) {
+      throw new NotFoundError(`Attachment ${attachmentId} was not found on task ${taskId}.`);
+    }
+
+    try {
+      const object = await getTaskAttachmentObject(config, attachment.key);
+      if (!object.Body) {
+        throw new NotFoundError(`Attachment ${attachmentId} has no content in R2.`);
+      }
+
+      reply.header("Content-Type", object.ContentType || attachment.contentType || "application/octet-stream");
+
+      if (typeof object.ContentLength === "number") {
+        reply.header("Content-Length", object.ContentLength);
+      }
+
+      if (object.ETag) {
+        reply.header("ETag", object.ETag);
+      }
+
+      if (object.LastModified) {
+        reply.header("Last-Modified", object.LastModified.toUTCString());
+      }
+
+      const disposition = query.download === "1" || attachment.kind === "file" ? "attachment" : "inline";
+      reply.header("Content-Disposition", formatContentDisposition(attachment.name, disposition));
+      return reply.send(object.Body as never);
+    } catch (error) {
+      if (typeof error === "object" && error !== null && "name" in error && (error as { name?: string }).name === "NoSuchKey") {
+        throw new NotFoundError(`Attachment ${attachmentId} content was not found in R2.`);
+      }
+      throw error;
+    }
+  });
   app.patch("/api/tasks/:taskId", async (request) =>
     updateTask(repository, (request.params as { taskId: string }).taskId, parseBody(updateTaskInputSchema, request.body))
   );

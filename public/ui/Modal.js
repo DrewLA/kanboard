@@ -3,7 +3,7 @@ import htm from "https://esm.sh/htm@3.1.1";
 import { allowedStatuses, allowedPriorities, statusLabels, formatDate, makeOptions, formatRelativeTime } from "./utils.js";
 import { CustomSelect } from "./CustomSelect.js";
 import { MetaChip } from "./BoardView.js";
-import { request } from "./api.js";
+import { request, getErrorMessage } from "./api.js";
 
 const html = htm.bind(React.createElement);
 
@@ -16,7 +16,23 @@ function makeFieldMentionChecker(userName) {
   return (value) => typeof value === "string" && re.test(value);
 }
 
-function useMentions(users) {
+function attachmentAccent(kind) {
+  if (kind === "mockup") return "linear-gradient(135deg, rgba(249, 115, 22, 0.96), rgba(251, 191, 36, 0.92))";
+  if (kind === "image") return "linear-gradient(135deg, rgba(77, 168, 255, 0.96), rgba(56, 189, 248, 0.9))";
+  return "linear-gradient(135deg, rgba(148, 163, 184, 0.92), rgba(99, 102, 241, 0.84))";
+}
+
+function sanitizeAttachmentReferenceLabel(value) {
+  return String(value || "attachment").replace(/[\[\]\(\)]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function parseAttachQuery(query) {
+  const lowered = String(query || "").toLowerCase();
+  if (!lowered.startsWith("attach")) return null;
+  return lowered.slice("attach".length).replace(/^[:/._-]+/, "").trim();
+}
+
+function useMentions(users, attachments = [], taskId = "") {
   const [state, setState] = useState(null);
   // state: { query, rect, el, mentionStart, setControlled }
 
@@ -40,11 +56,11 @@ function useMentions(users) {
     detect(el, setControlled ?? null);
   }
 
-  function selectUser(user) {
+  function selectSuggestion(suggestion) {
     if (!state) return;
     const { el, mentionStart, setControlled } = state;
     const cursor = el.selectionStart ?? el.value.length;
-    const newVal = el.value.slice(0, mentionStart) + "@" + user.name + " " + el.value.slice(cursor);
+    const newVal = el.value.slice(0, mentionStart) + suggestion.insertText + " " + el.value.slice(cursor);
 
     if (setControlled) {
       setControlled(newVal);
@@ -55,16 +71,42 @@ function useMentions(users) {
       el.dispatchEvent(new Event("input", { bubbles: true }));
     }
 
-    const newCursor = mentionStart + user.name.length + 2;
+    const newCursor = mentionStart + suggestion.insertText.length + 1;
     requestAnimationFrame(() => { el.setSelectionRange(newCursor, newCursor); el.focus(); });
     setState(null);
   }
 
-  const filtered = state
-    ? users.filter((u) => !state.query || u.name.toLowerCase().startsWith(state.query.toLowerCase())).slice(0, 7)
-    : [];
+  const attachQuery = state ? parseAttachQuery(state.query) : null;
+  const filtered = !state
+    ? []
+    : attachQuery !== null && taskId
+      ? attachments
+          .filter((attachment) => {
+            if (!attachQuery) return true;
+            return attachment.name.toLowerCase().includes(attachQuery) || attachment.kind.toLowerCase().includes(attachQuery);
+          })
+          .slice(0, 7)
+          .map((attachment) => ({
+            key: attachment.id,
+            label: attachment.name,
+            detail: attachmentKindLabel(attachment.kind),
+            avatarText: attachment.kind === "mockup" ? "M" : attachment.kind === "image" ? "I" : "F",
+            avatarStyle: { background: attachmentAccent(attachment.kind), color: "#08111d" },
+            insertText: `[${attachmentKindLabel(attachment.kind)}: ${sanitizeAttachmentReferenceLabel(attachment.name)}](${buildAttachmentContentUrl(taskId, attachment.id, attachment.kind === "file")})`
+          }))
+      : users
+          .filter((u) => !state.query || u.name.toLowerCase().startsWith(state.query.toLowerCase()))
+          .slice(0, 7)
+          .map((user) => ({
+            key: user.id,
+            label: user.name,
+            detail: user.role || "Person",
+            avatarText: user.name[0].toUpperCase(),
+            avatarStyle: { background: user.avatarColor || "var(--accent)" },
+            insertText: `@${user.name}`
+          }));
 
-  return { mentionState: state, filtered, handleInput, selectUser, closeMention: () => setState(null) };
+  return { mentionState: state, filtered, handleInput, selectSuggestion, closeMention: () => setState(null) };
 }
 
 function MentionMenu({ mentionState, filtered, onSelect, onClose }) {
@@ -81,18 +123,18 @@ function MentionMenu({ mentionState, filtered, onSelect, onClose }) {
   }, [onClose]);
 
   return html`
-    <div className="mention-menu" style=${style} role="listbox" aria-label="Mention a team member">
-      ${filtered.map((u) => html`
+    <div className="mention-menu" style=${style} role="listbox" aria-label="Insert mention or attachment reference">
+      ${filtered.map((item) => html`
         <button
-          key=${u.id}
+          key=${item.key}
           className="mention-menu-item"
           type="button"
           role="option"
-          onMouseDown=${(e) => { e.preventDefault(); onSelect(u); }}
+          onMouseDown=${(e) => { e.preventDefault(); onSelect(item); }}
         >
-          <span className="mention-menu-avatar" style=${{ background: u.avatarColor || "var(--accent)" }}>${u.name[0].toUpperCase()}</span>
-          <span className="mention-menu-name">${u.name}</span>
-          ${u.role ? html`<span className="mention-menu-role">${u.role}</span>` : null}
+          <span className="mention-menu-avatar" style=${item.avatarStyle}>${item.avatarText}</span>
+          <span className="mention-menu-name">${item.label}</span>
+          ${item.detail ? html`<span className="mention-menu-role">${item.detail}</span>` : null}
         </button>
       `)}
     </div>
@@ -114,10 +156,18 @@ function ExpandableTextarea({ name, rows, defaultValue, inputRef, markdownPrevie
     if (taRef.current) {
       taRef.current.value = defaultValue || "";
       taRef.current.style.height = "";
-      taRef.current.style.overflowY = "";
+      taRef.current.style.overflowY = markdownPreview ? "hidden" : "";
+      taRef.current.scrollTop = 0;
     }
     setExpanded(false);
   }, [name, defaultValue, markdownPreview]);
+
+  useEffect(() => {
+    const ta = taRef.current;
+    if (!markdownPreview || !ta) return;
+    if (!editing) ta.scrollTop = 0;
+    ta.style.overflowY = editing && expanded ? "hidden" : editing ? "" : "hidden";
+  }, [markdownPreview, editing, expanded]);
 
   function setRefs(node) {
     taRef.current = node;
@@ -176,7 +226,8 @@ function ExpandableTextarea({ name, rows, defaultValue, inputRef, markdownPrevie
       const toH = parseInt(ta.dataset.collapsedH || "0", 10);
       ta.style.transition = "height 280ms cubic-bezier(0.4, 0, 0.2, 1)";
       ta.style.height = toH > 0 ? toH + "px" : "";
-      ta.style.overflowY = "";
+      ta.style.overflowY = markdownPreview && !editing ? "hidden" : "";
+      if (markdownPreview && !editing) ta.scrollTop = 0;
       setExpanded(false);
       // After animation completes, clear explicit height so rows attr takes over
       setTimeout(() => {
@@ -228,7 +279,7 @@ function renderInlineMarkdown(text, keyPrefix = "md") {
   if (typeof text !== "string" || !text) return text || "";
 
   const parts = [];
-  const tokenRe = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|`([^`]+)`|\*\*([^*]+)\*\*|\*([^*]+)\*|(https?:\/\/[^\s<>"']+)/g;
+  const tokenRe = /\[([^\]]+)\]\(((?:https?:\/\/|\/)[^\s)]+)\)|`([^`]+)`|\*\*([^*]+)\*\*|\*([^*]+)\*|(https?:\/\/[^\s<>"']+)/g;
   let lastIdx = 0;
   let key = 0;
   let match;
@@ -380,12 +431,20 @@ function linkifyText(text) {
   let lastIdx = 0;
   let key = 0;
   let m;
-  URL_RE.lastIndex = 0;
-  while ((m = URL_RE.exec(text)) !== null) {
+  const tokenRe = /\[([^\]]+)\]\(((?:https?:\/\/|\/)[^\s)]+)\)|(https?:\/\/[^\s<>"']+)/g;
+  tokenRe.lastIndex = 0;
+  while ((m = tokenRe.exec(text)) !== null) {
     if (m.index > lastIdx) out.push(text.slice(lastIdx, m.index));
-    const raw = m[0];
+
+    if (m[1] && m[2]) {
+      out.push(html`<a key=${`u${key++}`} href=${m[2]} target="_blank" rel="noopener noreferrer" className="linkified-link" onClick=${(e) => e.stopPropagation()}>${m[1]}</a>`);
+      lastIdx = m.index + m[0].length;
+      continue;
+    }
+
+    const raw = m[3];
     const url = stripTrailingPunct(raw);
-    if (url.length < raw.length) URL_RE.lastIndex -= raw.length - url.length;
+    if (url.length < raw.length) tokenRe.lastIndex -= raw.length - url.length;
     out.push(html`<a key=${`u${key++}`} href=${url} target="_blank" rel="noopener noreferrer" className="linkified-link" onClick=${(e) => e.stopPropagation()}>${url}</a>`);
     lastIdx = m.index + url.length;
   }
@@ -399,8 +458,19 @@ function openLinkAtCaret(e) {
   const text = el.value;
   const pos = el.selectionStart;
   if (typeof pos !== "number" || !text) return;
-  URL_RE.lastIndex = 0;
+  const markdownLinkRe = /\[[^\]]+\]\(((?:https?:\/\/|\/)[^\s)]+)\)/g;
   let m;
+  while ((m = markdownLinkRe.exec(text)) !== null) {
+    const url = m[1];
+    const urlStart = m.index + m[0].lastIndexOf(url);
+    const urlEnd = urlStart + url.length;
+    if (pos >= urlStart && pos <= urlEnd) {
+      e.preventDefault();
+      window.open(url, "_blank", "noopener,noreferrer");
+      return;
+    }
+  }
+  URL_RE.lastIndex = 0;
   while ((m = URL_RE.exec(text)) !== null) {
     const url = stripTrailingPunct(m[0]);
     const start = m.index;
@@ -413,6 +483,485 @@ function openLinkAtCaret(e) {
   }
 }
 
+function formatBytes(value) {
+  if (!Number.isFinite(value) || value < 0) return null;
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 ** 2) return `${(value / 1024).toFixed(value < 10 * 1024 ? 1 : 0)} KB`;
+  if (value < 1024 ** 3) return `${(value / (1024 ** 2)).toFixed(value < 10 * 1024 ** 2 ? 1 : 0)} MB`;
+  return `${(value / (1024 ** 3)).toFixed(1)} GB`;
+}
+
+const mockupMimeTypes = new Set(["text/html", "image/svg+xml", "image/png"]);
+const imageMimeTypes = new Set(["image/jpeg", "image/png", "image/gif", "image/webp", "image/avif"]);
+
+function buildAttachmentContentUrl(taskId, attachmentId, download = false) {
+  const query = download ? "?download=1" : "";
+  return `/api/tasks/${encodeURIComponent(taskId)}/attachments/${encodeURIComponent(attachmentId)}/content${query}`;
+}
+
+function fileExtension(fileName) {
+  const match = String(fileName || "").toLowerCase().match(/\.[a-z0-9]+$/i);
+  return match ? match[0] : "";
+}
+
+function validateUploadSelection(kind, file) {
+  if (!file) return "Select a file first.";
+
+  const extension = fileExtension(file.name);
+  const mimeType = (file.type || "").toLowerCase();
+
+  if (kind === "mockup") {
+    if (![".html", ".svg", ".png"].includes(extension) || !mockupMimeTypes.has(mimeType)) {
+      return "Mockups must be an HTML, SVG, or PNG file.";
+    }
+  }
+
+  if (kind === "image") {
+    if (![".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif"].includes(extension) || !imageMimeTypes.has(mimeType)) {
+      return "Images must be JPG, PNG, GIF, WebP, or AVIF.";
+    }
+  }
+
+  return "";
+}
+
+function attachmentKindLabel(kind) {
+  if (kind === "image") return "Image";
+  if (kind === "mockup") return "Mockup";
+  return "File";
+}
+
+function AttachmentGlyph({ kind, size = 16 }) {
+  if (kind === "mockup") {
+    return html`
+      <svg width=${size} height=${size} viewBox="0 0 16 16" aria-hidden="true" fill="none">
+        <rect x="2" y="2.5" width="12" height="11" rx="2.5" stroke="currentColor" stroke-width="1.3"></rect>
+        <path d="M5 5.5h6M5 8h4M5 10.5h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"></path>
+      </svg>
+    `;
+  }
+
+  if (kind === "image") {
+    return html`
+      <svg width=${size} height=${size} viewBox="0 0 16 16" aria-hidden="true" fill="none">
+        <rect x="2" y="2.5" width="12" height="11" rx="2.5" stroke="currentColor" stroke-width="1.3"></rect>
+        <circle cx="6" cy="6" r="1.2" fill="currentColor"></circle>
+        <path d="M4 11l2.4-2.6a1 1 0 0 1 1.46 0L9.6 10l1.05-1.16a1 1 0 0 1 1.47.02L13 10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"></path>
+      </svg>
+    `;
+  }
+
+  return html`
+    <svg width=${size} height=${size} viewBox="0 0 16 16" aria-hidden="true" fill="none">
+      <path d="M5 2.5h4.8L13 5.7V12a1.5 1.5 0 0 1-1.5 1.5h-6A1.5 1.5 0 0 1 4 12V4a1.5 1.5 0 0 1 1-1.42Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"></path>
+      <path d="M9.5 2.5V5.5H12.5" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"></path>
+    </svg>
+  `;
+}
+
+function isVisualAttachment(attachment) {
+  return attachment?.kind === "image" || attachment?.kind === "mockup";
+}
+
+async function uploadFileToPresignedUrl(uploadUrl, file, contentType, onProgress) {
+  try {
+    await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("PUT", uploadUrl);
+      xhr.setRequestHeader("Content-Type", contentType);
+
+      xhr.upload.addEventListener("progress", (event) => {
+        if (typeof onProgress === "function") {
+          onProgress(event.loaded, event.lengthComputable ? event.total : file.size || 0);
+        }
+      });
+
+      xhr.addEventListener("load", () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve();
+          return;
+        }
+
+        reject(new Error(`Upload to R2 failed with status ${xhr.status}. Check the bucket CORS rule for ${window.location.origin}.`));
+      });
+
+      xhr.addEventListener("error", () => reject(new TypeError("Network request failed")));
+      xhr.addEventListener("abort", () => reject(new Error("Upload to R2 was aborted.")));
+      xhr.send(file);
+    });
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new Error(`Upload to R2 failed. Configure the R2 bucket CORS rule to allow ${window.location.origin} with PUT, GET, and HEAD using the Content-Type header.`);
+    }
+
+    throw error;
+  }
+}
+
+function TaskAttachmentViewer({ taskId, attachment, taskTitle, onBack, onClose }) {
+  if (!attachment) return null;
+
+  const contentUrl = buildAttachmentContentUrl(taskId, attachment.id);
+  const renderAsImage = attachment.kind === "image" || attachment.contentType === "image/png" || attachment.contentType === "image/svg+xml";
+
+  return html`
+    <section className="attachment-viewer-shell">
+      <div className="attachment-viewer-toolbar">
+        <div className="attachment-viewer-copy">
+          <span className="attachment-viewer-kicker">${taskTitle || "Task attachment"}</span>
+          <h3>${attachment.name}</h3>
+          <p>
+            ${attachmentKindLabel(attachment.kind)}
+            ${attachment.fileCount ? ` • ${attachment.fileCount} files` : ""}
+            ${formatBytes(attachment.size) ? ` • ${formatBytes(attachment.size)}` : ""}
+          </p>
+        </div>
+        <div className="attachment-viewer-actions">
+          <button className="button button-ghost" type="button" onClick=${onBack}>← Task</button>
+          <button
+            className="button button-solid"
+            type="button"
+            onClick=${() => window.open(buildAttachmentContentUrl(taskId, attachment.id, attachment.kind === "file"), "_blank", "noopener,noreferrer")}
+          >Open in tab</button>
+          <button className="button button-ghost" onClick=${onClose} aria-label="Close" type="button">✕</button>
+        </div>
+      </div>
+
+      ${renderAsImage
+        ? html`
+            <div className="attachment-image-stage glass-panel">
+              <img src=${contentUrl} alt=${attachment.name} className="attachment-image-full" />
+            </div>
+          `
+        : html`
+            <div className="attachment-mockup-stage glass-panel">
+              <div className="attachment-mockup-frame">
+                <iframe
+                  title=${attachment.name}
+                  src=${contentUrl}
+                  className="attachment-mockup-iframe"
+                  sandbox="allow-downloads allow-forms allow-modals allow-pointer-lock allow-popups allow-same-origin allow-scripts"
+                ></iframe>
+              </div>
+            </div>
+          `}
+    </section>
+  `;
+}
+
+function useTaskAttachments(task, currentUser, onReload) {
+  const imageInputRef = useRef(null);
+  const mockupInputRef = useRef(null);
+  const [pendingKind, setPendingKind] = useState("");
+  const [removingId, setRemovingId] = useState("");
+  const [error, setError] = useState("");
+  const [uploadState, setUploadState] = useState(null);
+  const [buttonState, setButtonState] = useState(null);
+
+  const taskId = task?.id || "";
+  const attachments = task?.attachments || [];
+  const uploadBusy = Boolean(pendingKind);
+
+  function resetInputs() {
+    if (imageInputRef.current) imageInputRef.current.value = "";
+    if (mockupInputRef.current) mockupInputRef.current.value = "";
+  }
+
+  function setTransientButtonState(nextState) {
+    setButtonState(nextState);
+  }
+
+  function clearError() {
+    setError("");
+    setButtonState((current) => current?.status === "error" ? null : current);
+  }
+
+  useEffect(() => {
+    resetInputs();
+    setPendingKind("");
+    setRemovingId("");
+    setError("");
+    setUploadState(null);
+    setButtonState(null);
+  }, [taskId]);
+
+  useEffect(() => {
+    if (buttonState?.status !== "success") return undefined;
+
+    const timer = setTimeout(() => {
+      setButtonState((current) => current?.status === "success" ? null : current);
+      setUploadState((current) => current?.stage === "Done" ? null : current);
+    }, 900);
+
+    return () => clearTimeout(timer);
+  }, [buttonState]);
+
+  async function persistAttachments(nextAttachments) {
+    await request(`/api/tasks/${taskId}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        attachments: nextAttachments,
+      })
+    });
+    await onReload?.();
+  }
+
+  async function addAttachment(nextAttachment) {
+    const freshTask = await request(`/api/tasks/${taskId}`);
+    await request(`/api/tasks/${taskId}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        attachments: [...(freshTask.attachments || []), nextAttachment],
+      })
+    });
+    await onReload?.();
+  }
+
+  async function removeAttachment(attachmentId) {
+    if (!taskId || !attachmentId || removingId) return;
+    clearError();
+    setRemovingId(attachmentId);
+    try {
+      const freshTask = await request(`/api/tasks/${taskId}`);
+      await persistAttachments((freshTask.attachments || []).filter((attachment) => attachment.id !== attachmentId));
+    } catch (uploadError) {
+      setError(getErrorMessage(uploadError));
+    } finally {
+      setRemovingId("");
+    }
+  }
+
+  async function uploadSingleFile(kind, file) {
+    if (!taskId || !file || uploadBusy) return;
+
+    const validationMessage = validateUploadSelection(kind, file);
+    if (validationMessage) {
+      setError(validationMessage);
+      setTransientButtonState({ kind, status: "error" });
+      resetInputs();
+      setUploadState(null);
+      return;
+    }
+
+    const attachmentId = crypto.randomUUID();
+    const contentType = file.type || (kind === "image" ? "image/jpeg" : "text/html");
+
+    setPendingKind(kind);
+    clearError();
+    setTransientButtonState({ kind, status: "uploading" });
+    setUploadState({ kind, fileName: file.name, stage: "Preparing", progress: 8 });
+    try {
+      const presigned = await request(`/api/tasks/${taskId}/upload-url`, {
+        method: "POST",
+        body: JSON.stringify({
+          kind,
+          attachmentId,
+          fileName: file.name,
+          contentType,
+          size: file.size,
+        })
+      });
+
+      setUploadState({ kind, fileName: file.name, stage: "Uploading", progress: 12 });
+      await uploadFileToPresignedUrl(presigned.uploadUrl, file, contentType, (loaded, total) => {
+        const nextProgress = total
+          ? Math.max(12, Math.min(92, Math.round((loaded / total) * 100)))
+          : 60;
+
+        setUploadState((current) => {
+          if (!current || current.kind !== kind) return current;
+          return { ...current, stage: "Uploading", progress: nextProgress };
+        });
+      });
+
+      setUploadState({ kind, fileName: file.name, stage: "Finishing", progress: 96 });
+
+      await addAttachment({
+        id: attachmentId,
+        kind,
+        name: file.name,
+        key: presigned.key,
+        contentType,
+        size: file.size,
+        createdAt: new Date().toISOString(),
+        uploadedBy: currentUser?.id || currentUser?.name || undefined,
+      });
+
+      setUploadState({ kind, fileName: file.name, stage: "Done", progress: 100 });
+      setTransientButtonState({ kind, status: "success" });
+    } catch (uploadError) {
+      setError(getErrorMessage(uploadError));
+      setTransientButtonState({ kind, status: "error" });
+      setUploadState(null);
+    } finally {
+      setPendingKind("");
+      resetInputs();
+    }
+  }
+
+  function openPicker(kind) {
+    if (uploadBusy) return;
+    if (kind === "image") imageInputRef.current?.click();
+    else if (kind === "mockup") mockupInputRef.current?.click();
+  }
+
+  function inputProps(kind) {
+    if (kind === "image") {
+      return {
+        ref: imageInputRef,
+        type: "file",
+        accept: "image/jpeg,image/png,image/gif,image/webp,image/avif,.jpg,.jpeg,.png,.gif,.webp,.avif",
+        hidden: true,
+        onChange: (event) => uploadSingleFile("image", event.currentTarget.files?.[0])
+      };
+    }
+
+    if (kind === "mockup") {
+      return {
+        ref: mockupInputRef,
+        type: "file",
+        accept: "text/html,image/svg+xml,image/png,.html,.svg,.png",
+        hidden: true,
+        onChange: (event) => uploadSingleFile("mockup", event.currentTarget.files?.[0])
+      };
+    }
+
+    return null;
+  }
+
+  function getButtonState(kind) {
+    if (pendingKind === kind) return "uploading";
+    return buttonState?.kind === kind ? buttonState.status : "";
+  }
+
+  return {
+    taskId,
+    attachments,
+    uploadBusy,
+    removingId,
+    error,
+    clearError,
+    uploadState,
+    removeAttachment,
+    openPicker,
+    inputProps,
+    getButtonState,
+  };
+}
+
+function TaskAttachmentControls({ controller }) {
+  if (!controller?.taskId) return null;
+
+  const items = [
+    { kind: "mockup", label: "Attach mockup" },
+    { kind: "image", label: "Attach image" },
+  ];
+
+  return html`
+    <div className="task-attach-toolbar" role="group" aria-label="Task attachments">
+      ${items.map((item) => {
+        const state = controller.getButtonState(item.kind);
+        return html`
+          <div key=${item.kind} className="task-attach-tip" data-tooltip=${item.label}>
+            <button
+              className=${`task-attach-icon${state ? ` task-attach-icon--${state}` : ""}`}
+              type="button"
+              aria-label=${item.label}
+              disabled=${controller.uploadBusy}
+              onClick=${() => controller.openPicker(item.kind)}
+            >
+              <${AttachmentGlyph} kind=${item.kind} size=${16} />
+              <svg className="task-attach-border" viewBox="0 0 34 34" aria-hidden="true">
+                <rect className="task-attach-border-segment" x="1.5" y="1.5" width="31" height="31" rx="10.5" pathLength="100"></rect>
+              </svg>
+            </button>
+          </div>
+        `;
+      })}
+    </div>
+  `;
+}
+
+function TaskAttachmentsPanel({ controller, onOpenViewer }) {
+  const attachments = controller?.attachments || [];
+
+  return html`
+    <section className="task-attachments-panel glass-panel">
+      <div className="task-attachments-header">
+        <div className="task-attachments-summary">
+          <span className="task-attachments-kicker">Attachments</span>
+          ${attachments.length ? html`<span className="task-attachments-count">${attachments.length}</span>` : null}
+        </div>
+      </div>
+
+      <input ...${controller.inputProps("image")} />
+      <input ...${controller.inputProps("mockup")} />
+
+      ${controller.uploadState ? html`
+        <div className="task-attachment-progress" role="status" aria-live="polite">
+          <div className="task-attachment-progress-copy">
+            <strong>${controller.uploadState.stage}</strong>
+            <span>${controller.uploadState.fileName}</span>
+          </div>
+          <span className="task-attachment-progress-value">${controller.uploadState.progress}%</span>
+          <div className="task-attachment-progress-track">
+            <span style=${{ width: `${controller.uploadState.progress}%` }}></span>
+          </div>
+        </div>
+      ` : null}
+
+      ${controller.error ? html`
+        <div className="form-error task-attachment-error" role="alert">
+          <span className="task-attachment-error-text">${controller.error}</span>
+          <button className="task-attachment-error-dismiss" type="button" aria-label="Dismiss attachment error" onClick=${controller.clearError}>
+            <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" fill="none">
+              <path d="M2 2 10 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"></path>
+              <path d="M10 2 2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"></path>
+            </svg>
+          </button>
+        </div>
+      ` : null}
+
+      ${attachments.length
+        ? html`
+            <div className="task-attachments-grid">
+              ${attachments.map((attachment) => html`
+                <article key=${attachment.id} className="task-attachment-card">
+                  <div className="task-attachment-badge"><${AttachmentGlyph} kind=${attachment.kind} size=${18} /></div>
+                  <div className="task-attachment-copy">
+                    <strong>${attachment.name}</strong>
+                    <span>
+                      ${attachmentKindLabel(attachment.kind)}
+                      ${attachment.fileCount ? ` • ${attachment.fileCount} files` : ""}
+                      ${formatBytes(attachment.size) ? ` • ${formatBytes(attachment.size)}` : ""}
+                    </span>
+                    <span>${formatRelativeTime(attachment.createdAt) || formatDate(attachment.createdAt) || "just now"}</span>
+                  </div>
+                  <div className="task-attachment-actions">
+                    ${isVisualAttachment(attachment)
+                      ? html`<button className="button button-ghost btn-sm" type="button" onClick=${() => onOpenViewer?.(attachment)}>View</button>`
+                      : null}
+                    <button
+                      className="button button-ghost btn-sm"
+                      type="button"
+                      onClick=${() => window.open(buildAttachmentContentUrl(controller.taskId, attachment.id, attachment.kind === "file"), "_blank", "noopener,noreferrer")}
+                    >${attachment.kind === "file" ? "Download" : "Open"}</button>
+                    <button
+                      className=${`button button-ghost btn-sm${controller.removingId === attachment.id ? " button--loading" : ""}`}
+                      type="button"
+                      disabled=${Boolean(controller.removingId)}
+                      onClick=${() => controller.removeAttachment(attachment.id)}
+                    >${controller.removingId === attachment.id ? "Removing" : "Remove"}</button>
+                  </div>
+                </article>
+              `)}
+            </div>
+          `
+        : null}
+    </section>
+  `;
+}
+
 // ---- Form body builder ----
 
 function fieldLabel(text, mentioned) {
@@ -420,7 +969,7 @@ function fieldLabel(text, mentioned) {
   return html`<span className="form-label-row">${text}<span className="form-field-mention" title="You were mentioned here">@</span></span>`;
 }
 
-function buildModalBody(modal, taskboard, activeFilters, lookup, onSwitchModal, usersMap, hasFieldMention) {
+function buildModalBody(modal, taskboard, activeFilters, lookup, onSwitchModal, usersMap, hasFieldMention, currentUser, onReload, onOpenViewer, taskAttachments) {
   const epics = taskboard?.epics || [];
   const allFeatures = epics.flatMap((epic) => epic.features);
   const allStories = allFeatures.flatMap((feature) => feature.userStories);
@@ -535,6 +1084,7 @@ function buildModalBody(modal, taskboard, activeFilters, lookup, onSwitchModal, 
     const t = modal.entity || {};
     const sv = modal.savedValues || {};
     const selectedStory = sv.storyId ?? t.storyId ?? modal.parentId ?? "";
+    const liveTask = t.id ? (lookup.findTask(t.id) || t) : t;
     const context = t.id ? lookup.getTaskContext(t.id) : null;
     return html`
       ${t.id ? html`<input type="hidden" name="id" value=${t.id} />` : null}
@@ -548,6 +1098,9 @@ function buildModalBody(modal, taskboard, activeFilters, lookup, onSwitchModal, 
         />
       </label>
       <label>${fieldLabel("Title", check(t.title))}<input name="title" defaultValue=${sv.title ?? t.title ?? ""} required onClick=${openLinkAtCaret} /></label>
+      ${modal.type === "edit-task"
+        ? html`<${TaskAttachmentsPanel} controller=${taskAttachments} onOpenViewer=${onOpenViewer} />`
+        : html`<div className="inline-note">Save the task first, then attach a mockup or image from this overlay.</div>`}
       <div className="form-field">
         <span>${fieldLabel("Summary", check(t.summary))}</span>
         <${ExpandableTextarea}
@@ -760,10 +1313,12 @@ export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit
   const formRef = useRef(null);
   const shellRef = useRef(null);
   const stageRef = useRef(null);
+  const taskShellSizeRef = useRef(null);
   const resizingRef = useRef(false);
   const wasDraggingRef = useRef(false);
   const [commentsOpen, setCommentsOpen] = useState(false);
   const [shellSize, setShellSize] = useState(null);
+  const [viewerAttachment, setViewerAttachment] = useState(null);
 
   // Layout constants shared between shift calc and resize clamping
   const PANE_W = 340;
@@ -773,7 +1328,56 @@ export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit
   const isEditTaskModal = Boolean(modal?.type === "edit-task" && modal?.entity?.id);
   const taskModalId = isEditTaskModal ? modal.entity.id : undefined;
 
-  useEffect(() => { setShellSize(null); }, [modal?.type, modal?.entity?.id]);
+  useEffect(() => {
+    setShellSize(null);
+    setViewerAttachment(null);
+    taskShellSizeRef.current = null;
+    setCommentsOpen(false);
+  }, [modal?.type, modal?.entity?.id]);
+
+  useEffect(() => {
+    let frame = 0;
+
+    if (viewerAttachment) {
+      setCommentsOpen(false);
+      frame = window.requestAnimationFrame(() => {
+        setShellSize({
+          width: Math.max(800, Math.min(window.innerWidth - 40, 1400)),
+          height: Math.max(560, Math.min(window.innerHeight - 40, 920))
+        });
+      });
+    } else if (taskShellSizeRef.current) {
+      const previousSize = taskShellSizeRef.current;
+      frame = window.requestAnimationFrame(() => {
+        setShellSize(previousSize);
+        taskShellSizeRef.current = null;
+      });
+    }
+
+    return () => {
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, [viewerAttachment]);
+
+  function openAttachmentViewer(attachment) {
+    if (!attachment) return;
+
+    taskShellSizeRef.current = shellRef.current
+      ? {
+          width: shellRef.current.offsetWidth,
+          height: shellRef.current.offsetHeight,
+        }
+      : {
+          width: Math.min(800, window.innerWidth - 32),
+          height: Math.max(560, Math.min(window.innerHeight - 40, 720)),
+        };
+
+    setViewerAttachment(attachment);
+  }
+
+  function closeAttachmentViewer() {
+    setViewerAttachment(null);
+  }
 
   // Dismiss field-type notifications on modal open (user can see field indicators briefly first)
   useEffect(() => {
@@ -881,8 +1485,18 @@ export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit
     window.addEventListener("mouseup", onUp);
   }
 
+  const modalEntity = modal?.entity || null;
+  const showEditMeta = Boolean(
+    modalEntity?.updatedAt &&
+    (modal?.type === "board-brief" || modal?.type?.startsWith("edit-"))
+  );
+
+  const isEditTask = modal?.type === "edit-task";
+  const liveTask = isEditTask && modalEntity?.id ? (lookup.findTask(modalEntity.id) || modalEntity) : modalEntity;
+  const attachmentController = useTaskAttachments(isEditTask ? liveTask : null, currentUser, onReload);
   const users = Object.values(usersMap || {}).sort((a, b) => a.name.localeCompare(b.name));
-  const { mentionState, filtered, handleInput, selectUser, closeMention } = useMentions(users);
+  const attachmentMentions = liveTask?.attachments || [];
+  const { mentionState, filtered, handleInput, selectSuggestion, closeMention } = useMentions(users, attachmentMentions, liveTask?.id || "");
 
   if (!modal) return null;
 
@@ -910,15 +1524,6 @@ export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit
 
     onSwitchModal(type, title, null, parentId);
   }
-
-  const modalEntity = modal.entity || null;
-  const showEditMeta = Boolean(
-    modalEntity?.updatedAt &&
-    (modal.type === "board-brief" || modal.type.startsWith("edit-"))
-  );
-
-  const isEditTask = modal.type === "edit-task";
-  const liveTask = isEditTask && modalEntity?.id ? (lookup.findTask(modalEntity.id) || modalEntity) : modalEntity;
   const commentCount = liveTask?.comments?.length || 0;
 
   const taskNotifs = isEditTask && liveTask?.id
@@ -930,14 +1535,15 @@ export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit
   const hasFieldMention = fieldNotifs.length > 0
     ? makeFieldMentionChecker(currentUser?.name)
     : () => false;
+  const viewerOpen = Boolean(viewerAttachment);
 
-  const body = buildModalBody(modal, taskboard, activeFilters, lookup, handleSwitchModal, usersMap, hasFieldMention);
+  const body = buildModalBody(modal, taskboard, activeFilters, lookup, handleSwitchModal, usersMap, hasFieldMention, currentUser, onReload, openAttachmentViewer, attachmentController);
 
   return html`
     <div className="modal-backdrop" role="presentation" onClick=${(e) => { if (!wasDraggingRef.current) onCloseAll(e); }}>
       <div className="modal-stage" ref=${stageRef}>
         <div
-          className="modal-shell"
+          className=${`modal-shell${viewerOpen ? " modal-shell--viewer" : ""}`}
           ref=${shellRef}
           role="dialog"
           aria-modal="true"
@@ -945,46 +1551,57 @@ export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit
           onClick=${(e) => e.stopPropagation()}
           onMouseDown=${onShellMouseDown}
         >
-          <div className="modal-header">
-            <h2>${modal.title}</h2>
-            ${isEditTask ? html`
-              <button
-                className=${`button button-ghost comments-toggle-btn${commentsOpen ? " comments-toggle-btn--active" : ""}${commentNotifs.length > 0 ? " comments-toggle-btn--has-notif" : ""}`}
-                type="button"
-                onClick=${() => setCommentsOpen((o) => !o)}
-                title=${commentNotifs.length > 0 ? `${commentNotifs.length} unread mention${commentNotifs.length === 1 ? "" : "s"}` : "Toggle comments"}
-              >
-                Comments${commentCount > 0 ? html`<span className="comments-header-badge">${commentCount}</span>` : null}
-                ${commentNotifs.length > 0 ? html`<span className="comments-header-mention-badge">@${commentNotifs.length}</span>` : null}
-              </button>
-            ` : null}
-            <button className="button button-ghost" onClick=${onCloseAll} aria-label="Close" type="button">✕</button>
-          </div>
-          <form
-            ref=${formRef}
-            className="form-grid"
-            onInput=${(e) => handleInput(e, null)}
-            onSubmit=${(e) => {
-              e.preventDefault();
-              onSubmit(modal.type, new FormData(e.currentTarget));
-            }}
-          >
-            ${body}
-            <div className="form-footer">
-              ${showEditMeta ? html`<${MetaChip} updatedBy=${modalEntity.updatedBy} updatedAt=${modalEntity.updatedAt} updatedVia=${modalEntity.updatedVia} usersMap=${usersMap} />` : null}
-              <button className="button button-ghost" type="button" disabled=${submitting} onClick=${onClose}>${stackDepth > 1 ? "← Back" : "Cancel"}</button>
-              <button className=${`button button-solid${submitting ? " button--loading" : ""}`} type="submit" disabled=${submitting}>${submitting ? "Saving" : "Save"}</button>
+          ${!viewerOpen ? html`
+            <div className="modal-header">
+              <h2>${modal.title}</h2>
+              <div className="modal-header-actions">
+                ${isEditTask ? html`
+                  <button
+                    className=${`button button-ghost comments-toggle-btn${commentsOpen ? " comments-toggle-btn--active" : ""}${commentNotifs.length > 0 ? " comments-toggle-btn--has-notif" : ""}`}
+                    type="button"
+                    onClick=${() => setCommentsOpen((o) => !o)}
+                    title=${commentNotifs.length > 0 ? `${commentNotifs.length} unread mention${commentNotifs.length === 1 ? "" : "s"}` : "Toggle comments"}
+                  >
+                    Comments${commentCount > 0 ? html`<span className="comments-header-badge">${commentCount}</span>` : null}
+                    ${commentNotifs.length > 0 ? html`<span className="comments-header-mention-badge">@${commentNotifs.length}</span>` : null}
+                  </button>
+                  <${TaskAttachmentControls} controller=${attachmentController} />
+                ` : null}
+                <button className="button button-ghost" onClick=${onCloseAll} aria-label="Close" type="button">✕</button>
+              </div>
             </div>
-            ${submitError ? html`<div className="form-error" role="alert">${submitError}</div>` : null}
-          </form>
+          ` : null}
+          ${viewerOpen
+            ? html`<${TaskAttachmentViewer} taskId=${liveTask?.id} attachment=${viewerAttachment} taskTitle=${liveTask?.title} onBack=${closeAttachmentViewer} onClose=${onCloseAll} />`
+            : html`
+                <form
+                  ref=${formRef}
+                  className="form-grid"
+                  onInput=${(e) => handleInput(e, null)}
+                  onSubmit=${(e) => {
+                    e.preventDefault();
+                    onSubmit(modal.type, new FormData(e.currentTarget));
+                  }}
+                >
+                  ${body}
+                  <div className="form-footer">
+                    ${showEditMeta ? html`<${MetaChip} updatedBy=${modalEntity.updatedBy} updatedAt=${modalEntity.updatedAt} updatedVia=${modalEntity.updatedVia} usersMap=${usersMap} />` : null}
+                    <button className="button button-ghost" type="button" disabled=${submitting} onClick=${onClose}>${stackDepth > 1 ? "← Back" : "Cancel"}</button>
+                    <button className=${`button button-solid${submitting ? " button--loading" : ""}`} type="submit" disabled=${submitting}>${submitting ? "Saving" : "Save"}</button>
+                  </div>
+                  ${submitError ? html`<div className="form-error" role="alert">${submitError}</div>` : null}
+                </form>
+              `}
         </div>
-        <div
-          className="modal-resize-handle"
-          onMouseDown=${startResize}
-          aria-hidden="true"
-          title="Drag to resize"
-        ></div>
-        ${commentsOpen && liveTask ? html`
+        ${!viewerOpen ? html`
+          <div
+            className="modal-resize-handle"
+            onMouseDown=${startResize}
+            aria-hidden="true"
+            title="Drag to resize"
+          ></div>
+        ` : null}
+        ${commentsOpen && liveTask && !viewerOpen ? html`
           <${CommentsPane}
             taskId=${liveTask.id}
             comments=${liveTask.comments || []}
@@ -1000,7 +1617,7 @@ export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit
       <${MentionMenu}
         mentionState=${mentionState}
         filtered=${filtered}
-        onSelect=${selectUser}
+        onSelect=${selectSuggestion}
         onClose=${closeMention}
       />
     </div>

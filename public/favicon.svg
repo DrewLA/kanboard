@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Taskboard">
+  <defs>
+    <linearGradient id="board-bg" x1="10" y1="6" x2="54" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0d1830"/>
+      <stop offset="1" stop-color="#08101f"/>
+    </linearGradient>
+    <linearGradient id="blue-card" x1="14" y1="16" x2="26" y2="46" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#63b3ff"/>
+      <stop offset="1" stop-color="#2d7fe6"/>
+    </linearGradient>
+    <linearGradient id="orange-card" x1="28" y1="18" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fb923c"/>
+      <stop offset="1" stop-color="#ea580c"/>
+    </linearGradient>
+    <linearGradient id="green-card" x1="42" y1="24" x2="54" y2="46" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#5ce0b0"/>
+      <stop offset="1" stop-color="#22b37f"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="16" fill="url(#board-bg)"/>
+  <path d="M12 18c0-3.314 2.686-6 6-6h28c3.314 0 6 2.686 6 6v28c0 3.314-2.686 6-6 6H18c-3.314 0-6-2.686-6-6V18Z" fill="none" stroke="rgba(118,170,230,0.35)" stroke-width="1.5"/>
+  <circle cx="18" cy="18" r="10" fill="rgba(77,168,255,0.12)"/>
+  <circle cx="51" cy="48" r="11" fill="rgba(249,115,22,0.12)"/>
+  <rect x="15" y="16" width="10" height="30" rx="4" fill="url(#blue-card)"/>
+  <rect x="29" y="20" width="10" height="18" rx="4" fill="url(#orange-card)"/>
+  <rect x="43" y="24" width="10" height="22" rx="4" fill="url(#green-card)"/>
+  <rect x="17" y="19" width="6" height="2" rx="1" fill="rgba(255,255,255,0.70)"/>
+  <rect x="17" y="24" width="6" height="2" rx="1" fill="rgba(255,255,255,0.34)"/>
+  <rect x="17" y="29" width="5" height="2" rx="1" fill="rgba(255,255,255,0.34)"/>
+  <rect x="31" y="23" width="6" height="2" rx="1" fill="rgba(255,255,255,0.68)"/>
+  <rect x="31" y="28" width="5" height="2" rx="1" fill="rgba(255,255,255,0.34)"/>
+  <rect x="45" y="27" width="6" height="2" rx="1" fill="rgba(255,255,255,0.68)"/>
+  <rect x="45" y="32" width="5" height="2" rx="1" fill="rgba(255,255,255,0.34)"/>
+</svg>

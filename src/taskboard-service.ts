@@ -1483,6 +1483,7 @@ export async function createTask(
       status: input.status,
       priority: input.priority,
       comments: [],
+      attachments: input.attachments,
       implementationNotes: input.implementationNotes,
       estimate: input.estimate,
       tags: input.tags,
