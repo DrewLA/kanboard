@@ -37,6 +37,17 @@ Comments are stored in a flat `comments` table in the state package, separate fr
 
 Comments are first-class objects exposed via the REST API and MCP. Agents use them for agent-to-agent coordination (requirements, blockers, handoff notes). The UI exposes a comments pane on task edit overlays.
 
+### Attachments
+
+Epics, features, and tasks each carry an `attachments[]` array of metadata records (id, kind, name, R2 object key, content type, size). The file bytes live in R2; the document stores only the metadata and key. Stories do not have attachments.
+
+There are two write paths into the same metadata shape:
+
+- **Browser**: the server hands out a short-lived presigned PUT URL (`POST /api/{epics|features|tasks}/:id/upload-url`), the browser uploads bytes straight to R2, then PATCHes the entity to append the metadata.
+- **Agents (MCP)**: the `upload_attachment` tool sends bytes inline; the service decodes them, uploads to R2 with `putAttachmentObject`, and appends the metadata inside a serialized mutation. Agents are limited to `image` and `mockup` kinds.
+
+Reads for both paths stream through the local server (`GET /api/{epics|features|tasks}/:id/attachments/:attachmentId/content`), which fetches the object from R2.
+
 ### Task fields
 
 Tasks carry additional fields beyond the base entity:

@@ -1,7 +1,8 @@
-import React, { useMemo } from "https://esm.sh/react@18.3.1";
+import React, { useEffect, useMemo, useRef, useState } from "https://esm.sh/react@18.3.1";
 import htm from "https://esm.sh/htm@3.1.1";
-import { allowedStatuses, statusLabels, getTaskContexts, priorityClass, formatRelativeTime } from "./utils.js";
+import { allowedStatuses, statusLabels, getTaskContexts, priorityClass, formatDate, formatRelativeTime } from "./utils.js";
 import { CustomSelect } from "./CustomSelect.js";
+import { request, getErrorMessage } from "./api.js";
 
 const html = htm.bind(React.createElement);
 
@@ -20,6 +21,12 @@ function buildHaystack(ctx, usersMap) {
     task.priority,
     task.status,
     statusLabels[task.status],
+    ...(task.attachments || []).flatMap((attachment) => [
+      attachment.name,
+      attachment.kind,
+      attachment.contentType,
+      attachment.uploadedBy,
+    ]),
     ...(task.tags || []),
     epic.title,
     feature.title,
@@ -46,6 +53,413 @@ function modifiedTime(ctx) {
 
 function compareByLastModified(left, right) {
   return modifiedTime(right) - modifiedTime(left);
+}
+
+function matchesTerms(value, terms) {
+  const haystack = String(value || "").toLowerCase();
+  return !terms.length || terms.every((term) => haystack.includes(term));
+}
+
+function buildFeatureHaystack(epic, feature) {
+  return [
+    feature.title,
+    feature.summary,
+    feature.alias,
+    feature.priority,
+    feature.status,
+    statusLabels[feature.status],
+    ...(feature.attachments || []).flatMap((attachment) => [
+      attachment.name,
+      attachment.kind,
+      attachment.contentType,
+      attachment.uploadedBy,
+    ]),
+    epic.title,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function attachmentKindLabel(kind) {
+  if (kind === "image") return "Image";
+  if (kind === "mockup") return "Mockup";
+  return "File";
+}
+
+function formatBytes(value) {
+  if (!Number.isFinite(value)) return "";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 ** 2) return `${(value / 1024).toFixed(value < 10 * 1024 ? 1 : 0)} KB`;
+  if (value < 1024 ** 3) return `${(value / (1024 ** 2)).toFixed(value < 10 * 1024 ** 2 ? 1 : 0)} MB`;
+  return `${(value / (1024 ** 3)).toFixed(1)} GB`;
+}
+
+function sourceApiPath(sourceType) {
+  if (sourceType === "epic") return "epics";
+  if (sourceType === "feature") return "features";
+  return "tasks";
+}
+
+function sourceTypeLabel(sourceType) {
+  if (sourceType === "epic") return "Epic";
+  if (sourceType === "feature") return "Feature";
+  return "Task";
+}
+
+function buildBoardAttachmentContentUrl(sourceType, sourceId, attachmentId, download = false) {
+  const query = download ? "?download=1" : "";
+  return `/api/${sourceApiPath(sourceType)}/${encodeURIComponent(sourceId)}/attachments/${encodeURIComponent(attachmentId)}/content${query}`;
+}
+
+function isVisualAttachment(attachment) {
+  return attachment?.kind === "image" || attachment?.kind === "mockup";
+}
+
+function canRenderAsImage(attachment) {
+  return attachment?.kind === "image" || attachment?.contentType === "image/png" || attachment?.contentType === "image/svg+xml";
+}
+
+function uploadedByLabel(attachment, usersMap) {
+  const uploadedBy = attachment?.uploadedBy;
+  if (!uploadedBy) return "";
+  return usersMap?.[uploadedBy]?.name || uploadedBy;
+}
+
+function fileExtension(fileName) {
+  const match = String(fileName || "").toLowerCase().match(/\.[a-z0-9]+$/i);
+  return match ? match[0] : "";
+}
+
+const mockupMimeTypes = new Set(["text/html", "image/svg+xml", "image/png"]);
+const imageMimeTypes = new Set(["image/jpeg", "image/png", "image/gif", "image/webp", "image/avif"]);
+
+function validateUploadSelection(kind, file) {
+  if (!file) return "Select a file first.";
+
+  const extension = fileExtension(file.name);
+  const mimeType = (file.type || "").toLowerCase();
+
+  if (kind === "mockup") {
+    if (![".html", ".svg", ".png"].includes(extension) || !mockupMimeTypes.has(mimeType)) {
+      return "Mockups must be an HTML, SVG, or PNG file.";
+    }
+  }
+
+  if (kind === "image") {
+    if (![".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif"].includes(extension) || !imageMimeTypes.has(mimeType)) {
+      return "Images must be JPG, PNG, GIF, WebP, or AVIF.";
+    }
+  }
+
+  return "";
+}
+
+async function uploadFileToPresignedUrl(uploadUrl, file, contentType, onProgress) {
+  try {
+    await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("PUT", uploadUrl);
+      xhr.setRequestHeader("Content-Type", contentType);
+
+      xhr.upload.addEventListener("progress", (event) => {
+        if (typeof onProgress === "function") {
+          onProgress(event.loaded, event.lengthComputable ? event.total : file.size || 0);
+        }
+      });
+
+      xhr.addEventListener("load", () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve();
+          return;
+        }
+
+        reject(new Error(`Upload to R2 failed with status ${xhr.status}. Check the bucket CORS rule for ${window.location.origin}.`));
+      });
+
+      xhr.addEventListener("error", () => reject(new TypeError("Network request failed")));
+      xhr.addEventListener("abort", () => reject(new Error("Upload to R2 was aborted.")));
+      xhr.send(file);
+    });
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new Error(`Upload to R2 failed. Configure the R2 bucket CORS rule to allow ${window.location.origin} with PUT, GET, and HEAD using the Content-Type header.`);
+    }
+
+    throw error;
+  }
+}
+
+function BoardAttachmentGlyph({ kind, size = 16 }) {
+  if (kind === "mockup") {
+    return html`
+      <svg width=${size} height=${size} viewBox="0 0 16 16" aria-hidden="true" fill="none">
+        <rect x="2" y="2.5" width="12" height="11" rx="2.5" stroke="currentColor" stroke-width="1.3"></rect>
+        <path d="M5 5.5h6M5 8h4M5 10.5h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"></path>
+      </svg>
+    `;
+  }
+
+  if (kind === "image") {
+    return html`
+      <svg width=${size} height=${size} viewBox="0 0 16 16" aria-hidden="true" fill="none">
+        <rect x="2" y="2.5" width="12" height="11" rx="2.5" stroke="currentColor" stroke-width="1.3"></rect>
+        <circle cx="6" cy="6" r="1.2" fill="currentColor"></circle>
+        <path d="M4 11l2.4-2.6a1 1 0 0 1 1.46 0L9.6 10l1.05-1.16a1 1 0 0 1 1.47.02L13 10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"></path>
+      </svg>
+    `;
+  }
+
+  return html`
+    <svg width=${size} height=${size} viewBox="0 0 16 16" aria-hidden="true" fill="none">
+      <path d="M5 2.5h4.8L13 5.7V12a1.5 1.5 0 0 1-1.5 1.5h-6A1.5 1.5 0 0 1 4 12V4a1.5 1.5 0 0 1 1-1.42Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"></path>
+      <path d="M9.5 2.5V5.5H12.5" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"></path>
+    </svg>
+  `;
+}
+
+function BoardAttachmentViewer({ record, onClose }) {
+  const attachment = record?.attachment;
+  const [previewLoaded, setPreviewLoaded] = useState(false);
+
+  const contentUrl = record
+    ? buildBoardAttachmentContentUrl(record.sourceType, record.sourceId, attachment.id)
+    : "";
+  const renderAsImage = attachment ? canRenderAsImage(attachment) : false;
+
+  useEffect(() => {
+    if (!record) return undefined;
+    function onKey(event) { if (event.key === "Escape") onClose(); }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [record, onClose]);
+
+  useEffect(() => {
+    setPreviewLoaded(false);
+  }, [contentUrl]);
+
+  if (!record || !attachment) return null;
+
+  return html`
+    <div className="board-viewer-backdrop" role="presentation" onClick=${onClose}>
+      <div className="board-viewer-shell glass-panel" role="dialog" aria-modal="true" aria-label=${attachment.name} onClick=${(e) => e.stopPropagation()}>
+        <div className="board-viewer-toolbar">
+          <div className="board-viewer-copy">
+            <span className="board-viewer-kicker">${sourceTypeLabel(record.sourceType)} / ${record.sourceTitle}</span>
+            <h3>${attachment.name}</h3>
+            <p>
+              ${attachmentKindLabel(attachment.kind)}
+              ${formatBytes(attachment.size) ? ` • ${formatBytes(attachment.size)}` : ""}
+            </p>
+          </div>
+          <div className="board-viewer-actions">
+            <button
+              className="button button-solid"
+              type="button"
+              onClick=${() => window.open(buildBoardAttachmentContentUrl(record.sourceType, record.sourceId, attachment.id, attachment.kind === "file"), "_blank", "noopener,noreferrer")}
+            >Open in tab</button>
+            <button className="button button-ghost" type="button" onClick=${onClose} aria-label="Close viewer">✕</button>
+          </div>
+        </div>
+        ${renderAsImage
+          ? html`
+              <div className="board-viewer-stage board-viewer-stage--image">
+                <img
+                  className=${`board-viewer-media${previewLoaded ? " is-ready" : ""}`}
+                  src=${contentUrl}
+                  alt=${attachment.name}
+                  onLoad=${() => setPreviewLoaded(true)}
+                  onError=${() => setPreviewLoaded(true)}
+                />
+                ${!previewLoaded ? html`
+                  <div className="board-viewer-skeleton board-viewer-skeleton--image" aria-hidden="true">
+                    <div className="bvs-frame">
+                      <svg width="48" height="48" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+                        <rect x="4" y="8" width="40" height="32" rx="5" stroke="currentColor" stroke-width="2"/>
+                        <circle cx="16" cy="20" r="4" stroke="currentColor" stroke-width="2"/>
+                        <path d="M4 34l10-10a3 3 0 0 1 4.2 0L26 32l6-6a3 3 0 0 1 4.2 0L44 34" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                      </svg>
+                    </div>
+                  </div>
+                ` : null}
+              </div>
+            `
+          : html`
+              <div className="board-viewer-stage board-viewer-stage--mockup">
+                <iframe
+                  className=${`board-viewer-media${previewLoaded ? " is-ready" : ""}`}
+                  title=${attachment.name}
+                  src=${contentUrl}
+                  sandbox="allow-downloads allow-forms allow-modals allow-pointer-lock allow-popups allow-same-origin allow-scripts"
+                  onLoad=${() => setPreviewLoaded(true)}
+                  onError=${() => setPreviewLoaded(true)}
+                ></iframe>
+                ${!previewLoaded ? html`
+                  <div className="board-viewer-skeleton board-viewer-skeleton--mockup" aria-hidden="true">
+                    <div className="bvs-browser">
+                      <div className="bvs-chrome">
+                        <div className="bvs-dots">
+                          <div className="bvs-dot"></div>
+                          <div className="bvs-dot"></div>
+                          <div className="bvs-dot"></div>
+                        </div>
+                        <div className="bvs-bar"></div>
+                      </div>
+                      <div className="bvs-body">
+                        <div className="bvs-block"></div>
+                        <div className="bvs-line" style=${{ width: "72%" }}></div>
+                        <div class="bvs-line" style=${{ width: "55%" }}></div>
+                        <div class="bvs-line" style=${{ width: "88%" }}></div>
+                        <div class="bvs-line" style=${{ width: "40%" }}></div>
+                      </div>
+                    </div>
+                  </div>
+                ` : null}
+              </div>
+            `}
+      </div>
+    </div>
+  `;
+}
+
+function BoardAttachmentPanel({
+  records,
+  targets,
+  selectedTarget,
+  onTargetChange,
+  uploadBusy,
+  uploadState,
+  uploadError,
+  clearUploadError,
+  getButtonState,
+  openPicker,
+  inputProps,
+  onOpenViewer,
+  onOpenSource,
+  onDelete,
+  removingKey,
+  confirmingDeleteKey,
+  onCancelDelete,
+  usersMap,
+}) {
+  const uploadItems = [
+    { kind: "mockup", label: "Attach mockup" },
+    { kind: "image", label: "Attach image" },
+    { kind: "file", label: "Attach file" },
+  ];
+
+  return html`
+    <section className="board-attachments-panel glass-panel">
+      <div className="board-attach-controls">
+        <label className="board-attach-target">
+          <span>Attach to</span>
+          <${CustomSelect}
+            value=${selectedTarget}
+            onChange=${onTargetChange}
+            options=${targets}
+            placeholder="Select epic, feature, or task..."
+          />
+        </label>
+        <div className="task-attach-toolbar" role="group" aria-label="Add attachment">
+          ${uploadItems.map((item) => {
+            const state = getButtonState(item.kind);
+            return html`
+              <div key=${item.kind} className="task-attach-tip" data-tooltip=${item.label}>
+                <button
+                  className=${`task-attach-icon${state ? ` task-attach-icon--${state}` : ""}`}
+                  type="button"
+                  aria-label=${item.label}
+                  disabled=${uploadBusy || !selectedTarget}
+                  onClick=${() => openPicker(item.kind)}
+                >
+                  <${BoardAttachmentGlyph} kind=${item.kind} size=${16} />
+                  <svg className="task-attach-border" viewBox="0 0 34 34" aria-hidden="true">
+                    <rect className="task-attach-border-segment" x="1.5" y="1.5" width="31" height="31" rx="10.5" pathLength="100"></rect>
+                  </svg>
+                </button>
+              </div>
+            `;
+          })}
+        </div>
+      </div>
+
+      <input ...${inputProps("image")} />
+      <input ...${inputProps("mockup")} />
+      <input ...${inputProps("file")} />
+
+      ${uploadState ? html`
+        <div className="task-attachment-progress" role="status" aria-live="polite">
+          <div className="task-attachment-progress-copy">
+            <strong>${uploadState.stage}</strong>
+            <span>${uploadState.fileName}</span>
+          </div>
+          <span className="task-attachment-progress-value">${uploadState.progress}%</span>
+          <div className="task-attachment-progress-track">
+            <span style=${{ width: `${uploadState.progress}%` }}></span>
+          </div>
+        </div>
+      ` : null}
+
+      ${uploadError ? html`
+        <div className="form-error task-attachment-error" role="alert">
+          <span className="task-attachment-error-text">${uploadError}</span>
+          <button className="task-attachment-error-dismiss" type="button" aria-label="Dismiss attachment error" onClick=${clearUploadError}>
+            <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" fill="none">
+              <path d="M2 2 10 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"></path>
+              <path d="M10 2 2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"></path>
+            </svg>
+          </button>
+        </div>
+      ` : null}
+
+      ${records.length
+        ? html`
+            <div className="board-attachments-grid">
+              ${records.map((record) => {
+                const attachment = record.attachment;
+                const uploadedBy = uploadedByLabel(attachment, usersMap);
+                const removing = removingKey === record.key;
+                const confirming = confirmingDeleteKey === record.key;
+                return html`
+                  <article key=${record.key} className="board-attachment-card">
+                    <div className="board-attachment-badge"><${BoardAttachmentGlyph} kind=${attachment.kind} size=${18} /></div>
+                    <div className="board-attachment-copy">
+                      <strong>${attachment.name}</strong>
+                      <span>
+                        ${attachmentKindLabel(attachment.kind)}
+                        ${formatBytes(attachment.size) ? ` • ${formatBytes(attachment.size)}` : ""}
+                        ${" • "}${formatRelativeTime(attachment.createdAt) || formatDate(attachment.createdAt) || "just now"}
+                      </span>
+                      <button className="board-attachment-origin" type="button" onClick=${() => onOpenSource(record)} title="Open source">
+                        ${sourceTypeLabel(record.sourceType)} / ${record.sourceTitle}${uploadedBy ? ` • ${uploadedBy}` : ""}
+                      </button>
+                    </div>
+                    <div className="board-attachment-actions">
+                      ${isVisualAttachment(attachment)
+                        ? html`<button className="button button-ghost btn-sm" type="button" onClick=${() => onOpenViewer(record)}>View</button>`
+                        : null}
+                      <button
+                        className="button button-ghost btn-sm"
+                        type="button"
+                        onClick=${() => window.open(buildBoardAttachmentContentUrl(record.sourceType, record.sourceId, attachment.id, attachment.kind === "file"), "_blank", "noopener,noreferrer")}
+                      >${attachment.kind === "file" ? "Download" : "Open"}</button>
+                      <button
+                        className=${`button button-ghost btn-sm board-attachment-delete${confirming ? " board-attachment-delete--confirming" : ""}${removing ? " button--loading" : ""}`}
+                        type="button"
+                        disabled=${Boolean(removingKey)}
+                        title=${confirming ? "Click again to confirm delete" : "Delete attachment"}
+                        onClick=${() => onDelete(record)}
+                        onBlur=${() => { if (confirming) onCancelDelete(); }}
+                      >${removing ? "Removing" : confirming ? "Sure?" : "Delete"}</button>
+                    </div>
+                  </article>
+                `;
+              })}
+            </div>
+          `
+        : html`<div className="board-attachment-empty">No attachments in the current board filter.</div>`}
+    </section>
+  `;
 }
 
 function MetaChip({ updatedBy, updatedAt, updatedVia, usersMap }) {
@@ -79,9 +493,21 @@ function UserCardChip({ user }) {
 
 export { MetaChip };
 
-export function BoardView({ taskboard, filters, onFilterChange, onAddTask, onTaskClick, onMoveTask, onAddEpic, onAddFeature, usersMap, notifications, currentUserId }) {
+export function BoardView({ taskboard, filters, onFilterChange, onAddTask, onTaskClick, onMoveTask, onAddEpic, onAddFeature, onFeatureClick, onEpicClick, onReload, usersMap, notifications, currentUserId }) {
   const epics = taskboard?.epics || [];
   const allContexts = useMemo(() => getTaskContexts(taskboard), [taskboard]);
+  const imageInputRef = useRef(null);
+  const mockupInputRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const [attachmentsOpen, setAttachmentsOpen] = useState(false);
+  const [viewerKey, setViewerKey] = useState("");
+  const [removingKey, setRemovingKey] = useState("");
+  const [confirmingDeleteKey, setConfirmingDeleteKey] = useState("");
+  const [selectedTarget, setSelectedTarget] = useState("");
+  const [pendingKind, setPendingKind] = useState("");
+  const [uploadState, setUploadState] = useState(null);
+  const [uploadError, setUploadError] = useState("");
+  const [buttonState, setButtonState] = useState(null);
 
   const visibleFeatures = filters.epicId
     ? epics.find((e) => e.id === filters.epicId)?.features || []
@@ -108,6 +534,289 @@ export function BoardView({ taskboard, filters, onFilterChange, onAddTask, onTas
     .map(({ ctx }) => ctx)
     .sort(compareByLastModified);
 
+  const contextFeatureIds = new Set(contexts.map((ctx) => ctx.feature.id));
+  const filteredFeatures = epics.flatMap((epic) =>
+    epic.features
+      .filter((feature) => {
+        if (filters.epicId && epic.id !== filters.epicId) return false;
+        if (filters.featureId && feature.id !== filters.featureId) return false;
+        if (!terms.length) return true;
+        return contextFeatureIds.has(feature.id) || matchesTerms(buildFeatureHaystack(epic, feature), terms);
+      })
+      .map((feature) => ({ epic, feature }))
+  );
+
+  const filteredEpics = epics.filter((epic) => {
+    if (filters.epicId && epic.id !== filters.epicId) return false;
+    if (!terms.length) return true;
+    return matchesTerms([epic.title, epic.summary, epic.alias].filter(Boolean).join(" "), terms);
+  });
+
+  // Target picker lists every place an upload can land, grouped Epic → Feature → Task.
+  const attachmentTargets = [
+    ...filteredEpics.map((epic) => ({
+      value: `epic:${epic.id}`,
+      label: `Epic / ${epic.title}`,
+    })),
+    ...filteredFeatures.map(({ epic, feature }) => ({
+      value: `feature:${feature.id}`,
+      label: `Feature / ${epic.title} / ${feature.title}`,
+    })),
+    ...contexts.map(({ epic, feature, story, task }) => ({
+      value: `task:${task.id}`,
+      label: `Task / ${feature.title} / ${task.title}`,
+    })),
+  ];
+
+  const attachmentRecords = [
+    ...filteredEpics.flatMap((epic) =>
+      (epic.attachments || []).map((attachment) => ({
+        key: `epic:${epic.id}:${attachment.id}`,
+        sourceType: "epic",
+        sourceId: epic.id,
+        sourceTitle: epic.title,
+        attachment,
+      }))
+    ),
+    ...filteredFeatures.flatMap(({ epic, feature }) =>
+      (feature.attachments || []).map((attachment) => ({
+        key: `feature:${feature.id}:${attachment.id}`,
+        sourceType: "feature",
+        sourceId: feature.id,
+        sourceTitle: `${epic.title} / ${feature.title}`,
+        attachment,
+      }))
+    ),
+    ...contexts.flatMap(({ feature, task }) =>
+      (task.attachments || []).map((attachment) => ({
+        key: `task:${task.id}:${attachment.id}`,
+        sourceType: "task",
+        sourceId: task.id,
+        sourceTitle: `${feature.title} / ${task.title}`,
+        attachment,
+      }))
+    ),
+  ].sort((left, right) => {
+    const leftTime = Date.parse(left.attachment.createdAt || "");
+    const rightTime = Date.parse(right.attachment.createdAt || "");
+    return (Number.isFinite(rightTime) ? rightTime : 0) - (Number.isFinite(leftTime) ? leftTime : 0);
+  });
+
+  const viewerRecord = attachmentRecords.find((record) => record.key === viewerKey) || null;
+  const uploadBusy = Boolean(pendingKind);
+
+  // Drop a stale target selection (e.g. its entity was filtered out), but never
+  // auto-pick one — the user must choose explicitly so uploads can't land on a
+  // surprise target.
+  useEffect(() => {
+    if (selectedTarget && !attachmentTargets.some((target) => target.value === selectedTarget)) {
+      setSelectedTarget("");
+    }
+  }, [attachmentTargets, selectedTarget]);
+
+  useEffect(() => {
+    if (buttonState?.status !== "success") return undefined;
+
+    const timer = setTimeout(() => {
+      setButtonState((current) => current?.status === "success" ? null : current);
+      setUploadState((current) => current?.stage === "Done" ? null : current);
+    }, 900);
+
+    return () => clearTimeout(timer);
+  }, [buttonState]);
+
+  function resetAttachmentInputs() {
+    if (imageInputRef.current) imageInputRef.current.value = "";
+    if (mockupInputRef.current) mockupInputRef.current.value = "";
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  function clearUploadError() {
+    setUploadError("");
+    setButtonState((current) => current?.status === "error" ? null : current);
+  }
+
+  function parseSelectedTarget() {
+    const [sourceType, sourceId] = String(selectedTarget || "").split(":");
+    if (!["epic", "feature", "task"].includes(sourceType) || !sourceId) return null;
+    return { sourceType, sourceId };
+  }
+
+  async function uploadBoardAttachment(kind, file) {
+    const target = parseSelectedTarget();
+    if (!target) {
+      setUploadError("Choose an epic, feature, or task first.");
+      setButtonState({ kind, status: "error" });
+      resetAttachmentInputs();
+      return;
+    }
+
+    if (uploadBusy) return;
+
+    const validationMessage = validateUploadSelection(kind, file);
+    if (validationMessage) {
+      setUploadError(validationMessage);
+      setButtonState({ kind, status: "error" });
+      setUploadState(null);
+      resetAttachmentInputs();
+      return;
+    }
+
+    const attachmentId = crypto.randomUUID();
+    const contentType = file.type || (kind === "image" ? "image/jpeg" : kind === "mockup" ? "text/html" : "application/octet-stream");
+    const endpointPath = sourceApiPath(target.sourceType);
+
+    setAttachmentsOpen(true);
+    setPendingKind(kind);
+    setUploadError("");
+    setButtonState({ kind, status: "uploading" });
+    setUploadState({ kind, fileName: file.name, stage: "Preparing", progress: 8 });
+
+    try {
+      const presigned = await request(`/api/${endpointPath}/${target.sourceId}/upload-url`, {
+        method: "POST",
+        body: JSON.stringify({
+          kind,
+          attachmentId,
+          fileName: file.name,
+          contentType,
+          size: file.size,
+        }),
+      });
+
+      setUploadState({ kind, fileName: file.name, stage: "Uploading", progress: 12 });
+      await uploadFileToPresignedUrl(presigned.uploadUrl, file, contentType, (loaded, total) => {
+        const nextProgress = total
+          ? Math.max(12, Math.min(92, Math.round((loaded / total) * 100)))
+          : 60;
+
+        setUploadState((current) => {
+          if (!current || current.kind !== kind) return current;
+          return { ...current, stage: "Uploading", progress: nextProgress };
+        });
+      });
+
+      setUploadState({ kind, fileName: file.name, stage: "Finishing", progress: 96 });
+
+      const freshSource = await request(`/api/${endpointPath}/${target.sourceId}`);
+      await request(`/api/${endpointPath}/${target.sourceId}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          attachments: [
+            ...(freshSource.attachments || []),
+            {
+              id: attachmentId,
+              kind,
+              name: file.name,
+              key: presigned.key,
+              contentType,
+              size: file.size,
+              createdAt: new Date().toISOString(),
+              uploadedBy: currentUserId || undefined,
+            },
+          ],
+        }),
+      });
+
+      await onReload?.();
+      setUploadState({ kind, fileName: file.name, stage: "Done", progress: 100 });
+      setButtonState({ kind, status: "success" });
+    } catch (uploadErr) {
+      setUploadError(getErrorMessage(uploadErr));
+      setButtonState({ kind, status: "error" });
+      setUploadState(null);
+    } finally {
+      setPendingKind("");
+      resetAttachmentInputs();
+    }
+  }
+
+  function openPicker(kind) {
+    if (uploadBusy) return;
+    if (kind === "image") imageInputRef.current?.click();
+    else if (kind === "mockup") mockupInputRef.current?.click();
+    else if (kind === "file") fileInputRef.current?.click();
+  }
+
+  function inputProps(kind) {
+    if (kind === "image") {
+      return {
+        ref: imageInputRef,
+        type: "file",
+        accept: "image/jpeg,image/png,image/gif,image/webp,image/avif,.jpg,.jpeg,.png,.gif,.webp,.avif",
+        hidden: true,
+        onChange: (event) => uploadBoardAttachment("image", event.currentTarget.files?.[0]),
+      };
+    }
+
+    if (kind === "mockup") {
+      return {
+        ref: mockupInputRef,
+        type: "file",
+        accept: "text/html,image/svg+xml,image/png,.html,.svg,.png",
+        hidden: true,
+        onChange: (event) => uploadBoardAttachment("mockup", event.currentTarget.files?.[0]),
+      };
+    }
+
+    return {
+      ref: fileInputRef,
+      type: "file",
+      hidden: true,
+      onChange: (event) => uploadBoardAttachment("file", event.currentTarget.files?.[0]),
+    };
+  }
+
+  function getButtonState(kind) {
+    if (pendingKind === kind) return "uploading";
+    return buttonState?.kind === kind ? buttonState.status : "";
+  }
+
+  function openAttachmentSource(record) {
+    if (!record) return;
+    if (record.sourceType === "epic") {
+      onEpicClick?.(record.sourceId);
+      return;
+    }
+    if (record.sourceType === "feature") {
+      onFeatureClick?.(record.sourceId);
+      return;
+    }
+
+    onTaskClick(record.sourceId);
+  }
+
+  async function deleteAttachment(record) {
+    if (!record || removingKey) return;
+    // First click arms confirmation; second click within the same armed state deletes.
+    if (confirmingDeleteKey !== record.key) {
+      setConfirmingDeleteKey(record.key);
+      return;
+    }
+    setConfirmingDeleteKey("");
+
+    const { sourceType, sourceId, attachment } = record;
+    const endpointPath = sourceApiPath(sourceType);
+
+    setRemovingKey(record.key);
+    setUploadError("");
+    try {
+      const freshSource = await request(`/api/${endpointPath}/${sourceId}`);
+      await request(`/api/${endpointPath}/${sourceId}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          attachments: (freshSource.attachments || []).filter((entry) => entry.id !== attachment.id),
+        }),
+      });
+      if (viewerKey === record.key) setViewerKey("");
+      await onReload?.();
+    } catch (deleteErr) {
+      setUploadError(getErrorMessage(deleteErr));
+    } finally {
+      setRemovingKey("");
+    }
+  }
+
   return html`
     <section className="view-shell view-shell--board">
       <div className="panel-toolbar glass-panel">
@@ -133,8 +842,8 @@ export function BoardView({ taskboard, filters, onFilterChange, onAddTask, onTas
           <input
             className="board-search-input"
             type="text"
-            placeholder="Search tasks..."
-            aria-label="Search tasks"
+            placeholder="Search tasks and attachments..."
+            aria-label="Search tasks and attachments"
             value=${filters.query || ""}
             onInput=${(e) => onFilterChange({ ...filters, query: e.target.value })}
             onKeyDown=${(e) => e.key === "Escape" && filters.query && onFilterChange({ ...filters, query: "" })}
@@ -148,8 +857,47 @@ export function BoardView({ taskboard, filters, onFilterChange, onAddTask, onTas
               >×</button>`
             : null}
         </div>
+        <button
+          className=${`button button-ghost board-attachments-toggle${attachmentsOpen ? " active" : ""}`}
+          type="button"
+          aria-expanded=${attachmentsOpen}
+          onClick=${() => setAttachmentsOpen((open) => !open)}
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" fill="none">
+            <path d="M6.2 9.8 10.5 5.5a2.1 2.1 0 0 1 3 3l-5.4 5.4a3.5 3.5 0 0 1-5-5L8.4 3.6a2.7 2.7 0 0 1 3.8 0" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"></path>
+          </svg>
+          <span>Attachments</span>
+          <span className="pill-count">${attachmentRecords.length}</span>
+        </button>
         <button className="button button-solid" onClick=${onAddTask}>+ Task</button>
       </div>
+
+      <div className=${`board-attachments-animate${attachmentsOpen ? " board-attachments-animate--open" : ""}`}>
+        <div className="board-attachments-animate-inner">
+          <${BoardAttachmentPanel}
+            records=${attachmentRecords}
+            targets=${attachmentTargets}
+            selectedTarget=${selectedTarget}
+            onTargetChange=${setSelectedTarget}
+            uploadBusy=${uploadBusy}
+            uploadState=${uploadState}
+            uploadError=${uploadError}
+            clearUploadError=${clearUploadError}
+            getButtonState=${getButtonState}
+            openPicker=${openPicker}
+            inputProps=${inputProps}
+            onOpenViewer=${(record) => setViewerKey(record.key)}
+            onOpenSource=${openAttachmentSource}
+            onDelete=${deleteAttachment}
+            removingKey=${removingKey}
+            confirmingDeleteKey=${confirmingDeleteKey}
+            onCancelDelete=${() => setConfirmingDeleteKey("")}
+            usersMap=${usersMap}
+          />
+        </div>
+      </div>
+
+      <${BoardAttachmentViewer} record=${viewerRecord} onClose=${() => setViewerKey("")} />
 
       ${contexts.length
         ? html`

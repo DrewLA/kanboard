@@ -2,7 +2,7 @@ import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 import { AppConfig, assertR2Config } from "./config";
-import { TaskAttachmentKind } from "./model";
+import { TaskAttachmentKind, WorkItemType } from "./model";
  
 let activeClient: S3Client | undefined;
 let loadedConfigSignature: string | undefined;
@@ -77,17 +77,32 @@ export function buildTaskAttachmentKey(
   fileName: string,
   relativePath?: string
 ): string {
-  const normalizedTaskId = sanitizeKeySegment(taskId, "task");
+  return buildWorkItemAttachmentKey("task", taskId, attachmentId, kind, fileName, relativePath);
+}
+
+export function buildWorkItemAttachmentKey(
+  itemType: WorkItemType | "epic",
+  itemId: string,
+  attachmentId: string,
+  kind: TaskAttachmentKind,
+  fileName: string,
+  relativePath?: string
+): string {
+  const normalizedItemId = sanitizeKeySegment(itemId, itemType);
+  const itemPath =
+    itemType === "feature" ? `features/${normalizedItemId}`
+    : itemType === "epic" ? `epics/${normalizedItemId}`
+    : normalizedItemId;
   const normalizedAttachmentId = normalizeAttachmentToken(attachmentId);
 
   if (kind === "mockup") {
     const normalizedRelativePath = sanitizeRelativePath(relativePath || fileName);
-    return `mockups/${normalizedTaskId}/${normalizedAttachmentId}/${normalizedRelativePath}`;
+    return `mockups/${itemPath}/${normalizedAttachmentId}/${normalizedRelativePath}`;
   }
 
   const normalizedFileName = sanitizeKeySegment(fileName, kind === "image" ? "image" : "file");
   const prefix = kind === "image" ? "images" : "files";
-  return `${prefix}/${normalizedTaskId}/${normalizedAttachmentId}-${normalizedFileName}`;
+  return `${prefix}/${itemPath}/${normalizedAttachmentId}-${normalizedFileName}`;
 }
 
 export async function createTaskUploadUrl(config: AppConfig, key: string, contentType: string, expiresIn = 3600) {
@@ -102,6 +117,17 @@ export async function createTaskUploadUrl(config: AppConfig, key: string, conten
     key,
     uploadUrl
   };
+}
+
+export async function putAttachmentObject(config: AppConfig, key: string, body: Buffer, contentType: string) {
+  const { client, config: requiredConfig } = getR2Client(config);
+  await client.send(new PutObjectCommand({
+    Bucket: requiredConfig.r2Bucket,
+    Key: key,
+    Body: body,
+    ContentType: contentType
+  }));
+  return { key };
 }
 
 export async function getTaskAttachmentObject(config: AppConfig, key: string) {

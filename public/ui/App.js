@@ -674,6 +674,9 @@ export function App() {
           onMoveTask=${moveTask}
           onAddEpic=${() => openModal("create-epic", "Create Epic")}
           onAddFeature=${() => openModal("create-feature", "Create Feature")}
+          onFeatureClick=${(id) => openModal("edit-feature", "Edit Feature", lookup.findFeature(id))}
+          onEpicClick=${(id) => openModal("edit-epic", "Edit Epic", lookup.findEpic(id))}
+          onReload=${reload}
           usersMap=${usersMap}
           notifications=${notifications}
           currentUserId=${currentUser?.id || null}

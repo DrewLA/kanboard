@@ -17,8 +17,10 @@ import {
   updateFeatureInputSchema,
   updateTaskInputSchema,
   updateUserStoryInputSchema,
-  updateWorkLinkInputSchema
+  updateWorkLinkInputSchema,
+  uploadAttachmentInputSchema
 } from "./model";
+import { AppConfig } from "./config";
 import {
   RepositoryAccessError,
   RepositoryConflictError,
@@ -60,6 +62,7 @@ import {
   updateTask,
   updateUserStory,
   updateWorkLink,
+  uploadAttachment,
   withMcpMutationSource
 } from "./taskboard-service";
 
@@ -454,6 +457,25 @@ export const toolDefinitions = [
     }
   },
   {
+    name: "upload_attachment",
+    description: "Attach a UI mockup or image to an epic, feature, or task. Send the file bytes inline (base64 for binary images, or utf8 for text such as HTML/SVG mockups). The server uploads to object storage and records the attachment. Mockups must be .html, .svg, or .png; images must be JPG, PNG, GIF, WebP, or AVIF.",
+    inputSchema: {
+      type: "object",
+      required: ["targetType", "kind", "fileName", "contentType", "content"],
+      properties: {
+        targetType: { type: "string", enum: ["epic", "feature", "task"] },
+        targetId: { type: "string" },
+        targetAlias: { type: "string" },
+        kind: { type: "string", enum: ["image", "mockup"] },
+        fileName: { type: "string" },
+        contentType: { type: "string" },
+        content: { type: "string", description: "File bytes, base64-encoded by default; set encoding to utf8 to send text directly." },
+        encoding: { type: "string", enum: ["base64", "utf8"] }
+      },
+      additionalProperties: false
+    }
+  },
+  {
     name: "list_links",
     description: "List all feature/task links.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false }
@@ -643,7 +665,7 @@ function toToolError(error: unknown) {
   };
 }
 
-export function buildMcpServer(repository: TaskboardRepository): Server {
+export function buildMcpServer(repository: TaskboardRepository, config: AppConfig): Server {
   const server = new Server(
     {
       name: "private-taskboard-mcp",
@@ -737,6 +759,8 @@ export function buildMcpServer(repository: TaskboardRepository): Server {
         }
         case "get_task":
           return toText(await getTask(repository, String((args as { taskId: string }).taskId)));
+        case "upload_attachment":
+          return toText(await uploadAttachment(repository, config, uploadAttachmentInputSchema.parse(args)));
         case "list_links":
           return toText(await listWorkLinks(repository));
         case "get_link":

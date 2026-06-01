@@ -157,7 +157,9 @@ If you change `TASKBOARD_PORT`, update the origin list to match. When this rule 
 
 This code authenticates to the R2 S3-compatible API with AWS SigV4 using `R2_ACCESS_KEY_ID` plus `R2_SECRET_ACCESS_KEY`. There is no separate bearer auth token in this upload path, and the browser itself uses short-lived presigned URLs rather than direct credentials.
 
-The browser uploads directly to R2 using presigned URLs. The taskboard stores only attachment metadata and object keys in task records; it never stores file contents in Redis or local state.
+The browser uploads directly to R2 using presigned URLs. The taskboard stores only attachment metadata and object keys in entity records; it never stores file contents in Redis or local state.
+
+MCP agents use a separate path: the `upload_attachment` tool sends the file bytes inline to the local server, which uploads them to R2 with the same SigV4 credentials and records the metadata. Agent-supplied bytes therefore pass through the local taskboard process, but are still stored only as R2 objects plus metadata, never in Redis or local state.
 
 Attachment reads do not use a stored public object read URL. The UI fetches attachment content through the local taskboard server on `127.0.0.1`, which then streams the object from R2.
 
@@ -205,7 +207,7 @@ Hierarchy:
 - `GET|POST /api/features` — `GET|PATCH|DELETE /api/features/:featureId`
 - `GET|POST /api/stories` — `GET|PATCH|DELETE /api/stories/:storyId`
 - `GET|POST /api/tasks` — `GET|PATCH|DELETE /api/tasks/:taskId`
-- `POST /api/tasks/:taskId/upload-url` — create a presigned R2 upload URL for an image or mockup asset
+- `POST /api/epics/:epicId/upload-url`, `POST /api/features/:featureId/upload-url`, `POST /api/tasks/:taskId/upload-url` — create a presigned R2 upload URL for an image or mockup asset
 
 Coordination:
 
@@ -224,7 +226,7 @@ Point your MCP client at:
 http://127.0.0.1:8787/mcp
 ```
 
-Available tools: `get_taskboard`, `get_board_brief`, `update_board_brief`, `list_epics`, `get_epic`, `create_epic`, `update_epic`, `delete_epic`, `list_features`, `get_feature`, `create_feature`, `update_feature`, `delete_feature`, `list_user_stories`, `get_user_story`, `create_user_story`, `update_user_story`, `delete_user_story`, `list_tasks`, `get_task`, `create_task`, `update_task`, `delete_task`, `resolve_node`, `find_nodes`, `create_comment`, `get_comment`, `update_comment`, `delete_comment`, `list_links`, `get_link`, `create_link`, `update_link`, `delete_link`.
+Available tools: `get_taskboard`, `get_board_brief`, `update_board_brief`, `list_epics`, `get_epic`, `create_epic`, `update_epic`, `delete_epic`, `list_features`, `get_feature`, `create_feature`, `update_feature`, `delete_feature`, `list_user_stories`, `get_user_story`, `create_user_story`, `update_user_story`, `delete_user_story`, `list_tasks`, `get_task`, `create_task`, `update_task`, `delete_task`, `upload_attachment`, `resolve_node`, `find_nodes`, `create_comment`, `get_comment`, `update_comment`, `delete_comment`, `list_links`, `get_link`, `create_link`, `update_link`, `delete_link`.
 
 See `docs/agent-skill-prompt.md` for the agent operating prompt.
 

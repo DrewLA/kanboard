@@ -5,7 +5,7 @@ import type { IncomingHttpHeaders } from "node:http";
 import fastifyStatic from "@fastify/static";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
-import Fastify, { FastifyInstance } from "fastify";
+import Fastify, { FastifyInstance, FastifyReply } from "fastify";
 import { z, ZodError } from "zod";
 
 import { AgentRegistry, createAgentRegistryFilePath } from "./agent-registry";
@@ -13,11 +13,11 @@ import { AgentEventHub, BoardEventHub } from "./board-events";
 import { AppConfig, assertStorageConfig, getAppConfig } from "./config";
 import {
   boardBriefPatchSchema,
+  createAttachmentUploadInputSchema,
   createNodeCommentInputSchema,
   createEpicInputSchema,
   createFeatureInputSchema,
   createTaskInputSchema,
-  createTaskUploadInputSchema,
   createUserStoryInputSchema,
   createWorkLinkInputSchema,
   findNodesInputSchema,
@@ -27,12 +27,13 @@ import {
   updateFeatureInputSchema,
   updateTaskInputSchema,
   updateUserStoryInputSchema,
-  updateWorkLinkInputSchema
+  updateWorkLinkInputSchema,
+  type TaskAttachment
 } from "./model";
 import { buildMcpServer } from "./mcp-core";
 import { acquireHttpServerLock } from "./process-lock";
 import { RepositoryAccessError, RepositoryConflictError, createTaskboardRepository } from "./repository";
-import { R2ConfigError, buildTaskAttachmentKey, createTaskUploadUrl, getTaskAttachmentObject, normalizeAttachmentToken } from "./r2";
+import { R2ConfigError, buildWorkItemAttachmentKey, createTaskUploadUrl, getTaskAttachmentObject, normalizeAttachmentToken } from "./r2";
 import {
   NotFoundError,
   createNodeComment,
@@ -85,6 +86,45 @@ function parseBody<T>(schema: { parse: (value: unknown) => T }, body: unknown): 
 function formatContentDisposition(value: string, disposition: "inline" | "attachment"): string {
   const sanitized = value.replace(/[\r\n"]/g, "-") || "download";
   return `${disposition}; filename="${sanitized}"`;
+}
+
+async function sendAttachmentContent(
+  config: AppConfig,
+  reply: FastifyReply,
+  attachment: TaskAttachment,
+  attachmentId: string,
+  sourceLabel: string,
+  download?: string
+) {
+  try {
+    const object = await getTaskAttachmentObject(config, attachment.key);
+    if (!object.Body) {
+      throw new NotFoundError(`Attachment ${attachmentId} has no content in R2.`);
+    }
+
+    reply.header("Content-Type", object.ContentType || attachment.contentType || "application/octet-stream");
+
+    if (typeof object.ContentLength === "number") {
+      reply.header("Content-Length", object.ContentLength);
+    }
+
+    if (object.ETag) {
+      reply.header("ETag", object.ETag);
+    }
+
+    if (object.LastModified) {
+      reply.header("Last-Modified", object.LastModified.toUTCString());
+    }
+
+    const disposition = download === "1" || attachment.kind === "file" ? "attachment" : "inline";
+    reply.header("Content-Disposition", formatContentDisposition(attachment.name, disposition));
+    return reply.send(object.Body as never);
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "name" in error && (error as { name?: string }).name === "NoSuchKey") {
+      throw new NotFoundError(`Attachment ${attachmentId} content was not found in R2 for ${sourceLabel}.`);
+    }
+    throw error;
+  }
 }
 
 const unlockIdentityInputSchema = z.object({
@@ -516,6 +556,28 @@ async function buildServer(config: AppConfig): Promise<FastifyInstance> {
   app.get("/api/epics", async () => listEpics(repository));
   app.post("/api/epics", async (request) => createEpic(repository, parseBody(createEpicInputSchema, request.body)));
   app.get("/api/epics/:epicId", async (request) => getEpic(repository, (request.params as { epicId: string }).epicId));
+  app.post("/api/epics/:epicId/upload-url", async (request) => {
+    const epicId = (request.params as { epicId: string }).epicId;
+    await getEpic(repository, epicId);
+
+    const input = parseBody(createAttachmentUploadInputSchema, request.body);
+    const attachmentId = normalizeAttachmentToken(input.attachmentId ?? randomUUID());
+    const key = buildWorkItemAttachmentKey("epic", epicId, attachmentId, input.kind, input.fileName, input.relativePath);
+
+    return createTaskUploadUrl(config, key, input.contentType);
+  });
+  app.get("/api/epics/:epicId/attachments/:attachmentId/content", async (request, reply) => {
+    const { epicId, attachmentId } = request.params as { epicId: string; attachmentId: string };
+    const query = request.query as { download?: string };
+    const epic = await getEpic(repository, epicId);
+    const attachment = (epic.attachments || []).find((entry) => entry.id === attachmentId);
+
+    if (!attachment) {
+      throw new NotFoundError(`Attachment ${attachmentId} was not found on epic ${epicId}.`);
+    }
+
+    return sendAttachmentContent(config, reply, attachment, attachmentId, `epic ${epicId}`, query.download);
+  });
   app.patch("/api/epics/:epicId", async (request) =>
     updateEpic(repository, (request.params as { epicId: string }).epicId, parseBody(updateEpicInputSchema, request.body))
   );
@@ -528,6 +590,28 @@ async function buildServer(config: AppConfig): Promise<FastifyInstance> {
   app.get("/api/features/:featureId", async (request) =>
     getFeature(repository, (request.params as { featureId: string }).featureId)
   );
+  app.post("/api/features/:featureId/upload-url", async (request) => {
+    const featureId = (request.params as { featureId: string }).featureId;
+    await getFeature(repository, featureId);
+
+    const input = parseBody(createAttachmentUploadInputSchema, request.body);
+    const attachmentId = normalizeAttachmentToken(input.attachmentId ?? randomUUID());
+    const key = buildWorkItemAttachmentKey("feature", featureId, attachmentId, input.kind, input.fileName, input.relativePath);
+
+    return createTaskUploadUrl(config, key, input.contentType);
+  });
+  app.get("/api/features/:featureId/attachments/:attachmentId/content", async (request, reply) => {
+    const { featureId, attachmentId } = request.params as { featureId: string; attachmentId: string };
+    const query = request.query as { download?: string };
+    const feature = await getFeature(repository, featureId);
+    const attachment = (feature.attachments || []).find((entry) => entry.id === attachmentId);
+
+    if (!attachment) {
+      throw new NotFoundError(`Attachment ${attachmentId} was not found on feature ${featureId}.`);
+    }
+
+    return sendAttachmentContent(config, reply, attachment, attachmentId, `feature ${featureId}`, query.download);
+  });
   app.patch("/api/features/:featureId", async (request) =>
     updateFeature(repository, (request.params as { featureId: string }).featureId, parseBody(updateFeatureInputSchema, request.body))
   );
@@ -558,9 +642,9 @@ async function buildServer(config: AppConfig): Promise<FastifyInstance> {
     const taskId = (request.params as { taskId: string }).taskId;
     await getTask(repository, taskId);
 
-    const input = parseBody(createTaskUploadInputSchema, request.body);
+    const input = parseBody(createAttachmentUploadInputSchema, request.body);
     const attachmentId = normalizeAttachmentToken(input.attachmentId ?? randomUUID());
-    const key = buildTaskAttachmentKey(taskId, attachmentId, input.kind, input.fileName, input.relativePath);
+    const key = buildWorkItemAttachmentKey("task", taskId, attachmentId, input.kind, input.fileName, input.relativePath);
 
     return createTaskUploadUrl(config, key, input.contentType);
   });
@@ -574,35 +658,7 @@ async function buildServer(config: AppConfig): Promise<FastifyInstance> {
       throw new NotFoundError(`Attachment ${attachmentId} was not found on task ${taskId}.`);
     }
 
-    try {
-      const object = await getTaskAttachmentObject(config, attachment.key);
-      if (!object.Body) {
-        throw new NotFoundError(`Attachment ${attachmentId} has no content in R2.`);
-      }
-
-      reply.header("Content-Type", object.ContentType || attachment.contentType || "application/octet-stream");
-
-      if (typeof object.ContentLength === "number") {
-        reply.header("Content-Length", object.ContentLength);
-      }
-
-      if (object.ETag) {
-        reply.header("ETag", object.ETag);
-      }
-
-      if (object.LastModified) {
-        reply.header("Last-Modified", object.LastModified.toUTCString());
-      }
-
-      const disposition = query.download === "1" || attachment.kind === "file" ? "attachment" : "inline";
-      reply.header("Content-Disposition", formatContentDisposition(attachment.name, disposition));
-      return reply.send(object.Body as never);
-    } catch (error) {
-      if (typeof error === "object" && error !== null && "name" in error && (error as { name?: string }).name === "NoSuchKey") {
-        throw new NotFoundError(`Attachment ${attachmentId} content was not found in R2.`);
-      }
-      throw error;
-    }
+    return sendAttachmentContent(config, reply, attachment, attachmentId, `task ${taskId}`, query.download);
   });
   app.patch("/api/tasks/:taskId", async (request) =>
     updateTask(repository, (request.params as { taskId: string }).taskId, parseBody(updateTaskInputSchema, request.body))
@@ -694,7 +750,7 @@ async function buildServer(config: AppConfig): Promise<FastifyInstance> {
       return;
     }
 
-    const server = buildMcpServer(repository);
+    const server = buildMcpServer(repository, config);
     let isClosing = false;
     let transport!: StreamableHTTPServerTransport;
 

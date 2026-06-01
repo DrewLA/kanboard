@@ -20,9 +20,11 @@ import {
   RecycleBinEntryType,
   ResolveNodeInput,
   Task,
+  TaskAttachment,
   TaskboardDocument,
   TaskboardSnapshot,
   UpdateNodeCommentInput,
+  UploadAttachmentInput,
   UpdateEpicInput,
   UpdateFeatureInput,
   UpdateTaskInput,
@@ -37,8 +39,11 @@ import {
   normalizeAliasValue,
   toSnapshot
 } from "./model";
+import { AppConfig } from "./config";
+import { buildWorkItemAttachmentKey, normalizeAttachmentToken, putAttachmentObject } from "./r2";
 import { TaskboardRepository } from "./repository";
 import { UserRecord } from "./state-package";
+import { randomUUID } from "node:crypto";
 
 let writeQueue: Promise<void> = Promise.resolve();
 let activeMutationEditor: string | undefined;
@@ -274,6 +279,19 @@ function requireStoryReference(document: TaskboardDocument, storyId?: string, st
   }
 
   return requireStory(document, node.id);
+}
+
+function requireTaskReference(document: TaskboardDocument, taskId?: string, taskAlias?: string): Task {
+  if (taskId) {
+    return requireTask(document, taskId);
+  }
+
+  const node = taskAlias ? findNodeByAlias(document, taskAlias) : null;
+  if (!node || node.type !== "task") {
+    throw new NotFoundError(`Task ${taskAlias ?? ""} was not found.`);
+  }
+
+  return requireTask(document, node.id);
 }
 
 function requireBoardNode(document: TaskboardDocument, nodeType: BoardNodeType, nodeId: string): Epic | Feature | UserStory | Task {
@@ -1138,6 +1156,7 @@ export async function createEpic(
       priority: input.priority,
       comments: [],
       featureIds: [],
+      attachments: input.attachments ?? [],
       author: activeMutationEditor,
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -1255,6 +1274,7 @@ export async function createFeature(
       priority: input.priority,
       comments: [],
       storyIds: [],
+      attachments: input.attachments,
       author: activeMutationEditor,
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -1544,6 +1564,70 @@ export async function updateTask(
     void notifyMentions(repository, "task", taskId, `field:${taskId}`, "field", textFields, actor?.id).catch(() => {});
   }
   return task;
+}
+
+// Resolve an attachment target (epic/feature/task) to a concrete entity that
+// carries an attachments[] array. Stories don't support attachments.
+function requireAttachmentTarget(
+  document: TaskboardDocument,
+  targetType: UploadAttachmentInput["targetType"],
+  targetId?: string,
+  targetAlias?: string
+): Epic | Feature | Task {
+  if (targetType === "epic") return requireEpicReference(document, targetId, targetAlias);
+  if (targetType === "feature") return requireFeatureReference(document, targetId, targetAlias);
+  return requireTaskReference(document, targetId, targetAlias);
+}
+
+// Server-side upload used by agents: decode inline bytes, push to R2, then
+// append the attachment metadata to the target in a serialized mutation. The
+// browser path uses presigned PUTs instead and never routes bytes through here.
+export async function uploadAttachment(
+  repository: TaskboardRepository,
+  config: AppConfig,
+  input: UploadAttachmentInput
+): Promise<{ targetType: UploadAttachmentInput["targetType"]; targetId: string; attachment: TaskAttachment }> {
+  const document = await repository.load();
+  const target = requireAttachmentTarget(document, input.targetType, input.targetId, input.targetAlias);
+
+  const body = Buffer.from(input.content, input.encoding === "utf8" ? "utf8" : "base64");
+  if (body.length === 0) {
+    throw new Error("Attachment content decoded to zero bytes; check the content and encoding fields.");
+  }
+
+  const attachmentId = normalizeAttachmentToken(randomUUID());
+  const key = buildWorkItemAttachmentKey(input.targetType, target.id, attachmentId, input.kind, input.fileName);
+  await putAttachmentObject(config, key, body, input.contentType);
+
+  const attachment: TaskAttachment = {
+    id: attachmentId,
+    kind: input.kind,
+    name: input.fileName,
+    key,
+    contentType: input.contentType,
+    size: body.length,
+    createdAt: nowIso()
+  };
+
+  return mutateDocument(repository, (document) => {
+    const targetEntity = requireAttachmentTarget(document, input.targetType, input.targetId, input.targetAlias);
+    return {
+      scopes: [nodeScope(input.targetType, targetEntity.id)],
+      summary: `Attached ${input.kind} ${input.fileName} to ${input.targetType} ${targetEntity.title}.`,
+      apply: (nextDocument) => {
+        const nextEntity = requireAttachmentTarget(nextDocument, input.targetType, targetEntity.id);
+        nextEntity.attachments = [...(nextEntity.attachments || []), attachment];
+        if (input.targetType === "feature") {
+          touchFeatureLineage(nextDocument, nextEntity as Feature, nowIso());
+        } else if (input.targetType === "task") {
+          touchTaskLineage(nextDocument, nextEntity as Task, nowIso());
+        } else {
+          touchEditableEntity(nextEntity, nowIso());
+        }
+        return { targetType: input.targetType, targetId: nextEntity.id, attachment };
+      }
+    };
+  });
 }
 
 export async function deleteTask(

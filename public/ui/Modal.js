@@ -652,6 +652,7 @@ function TaskAttachmentViewer({ taskId, attachment, taskTitle, onBack, onClose }
 function useTaskAttachments(task, currentUser, onReload) {
   const imageInputRef = useRef(null);
   const mockupInputRef = useRef(null);
+  const fileInputRef = useRef(null);
   const [pendingKind, setPendingKind] = useState("");
   const [removingId, setRemovingId] = useState("");
   const [error, setError] = useState("");
@@ -665,6 +666,7 @@ function useTaskAttachments(task, currentUser, onReload) {
   function resetInputs() {
     if (imageInputRef.current) imageInputRef.current.value = "";
     if (mockupInputRef.current) mockupInputRef.current.value = "";
+    if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
   function setTransientButtonState(nextState) {
@@ -744,7 +746,7 @@ function useTaskAttachments(task, currentUser, onReload) {
     }
 
     const attachmentId = crypto.randomUUID();
-    const contentType = file.type || (kind === "image" ? "image/jpeg" : "text/html");
+    const contentType = file.type || (kind === "image" ? "image/jpeg" : kind === "mockup" ? "text/html" : "application/octet-stream");
 
     setPendingKind(kind);
     clearError();
@@ -803,6 +805,7 @@ function useTaskAttachments(task, currentUser, onReload) {
     if (uploadBusy) return;
     if (kind === "image") imageInputRef.current?.click();
     else if (kind === "mockup") mockupInputRef.current?.click();
+    else if (kind === "file") fileInputRef.current?.click();
   }
 
   function inputProps(kind) {
@@ -823,6 +826,15 @@ function useTaskAttachments(task, currentUser, onReload) {
         accept: "text/html,image/svg+xml,image/png,.html,.svg,.png",
         hidden: true,
         onChange: (event) => uploadSingleFile("mockup", event.currentTarget.files?.[0])
+      };
+    }
+
+    if (kind === "file") {
+      return {
+        ref: fileInputRef,
+        type: "file",
+        hidden: true,
+        onChange: (event) => uploadSingleFile("file", event.currentTarget.files?.[0])
       };
     }
 
@@ -855,6 +867,7 @@ function TaskAttachmentControls({ controller }) {
   const items = [
     { kind: "mockup", label: "Attach mockup" },
     { kind: "image", label: "Attach image" },
+    { kind: "file", label: "Attach file" },
   ];
 
   return html`
@@ -896,6 +909,7 @@ function TaskAttachmentsPanel({ controller, onOpenViewer }) {
 
       <input ...${controller.inputProps("image")} />
       <input ...${controller.inputProps("mockup")} />
+      <input ...${controller.inputProps("file")} />
 
       ${controller.uploadState ? html`
         <div className="task-attachment-progress" role="status" aria-live="polite">

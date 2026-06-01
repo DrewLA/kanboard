@@ -26,7 +26,7 @@ async function start(): Promise<void> {
       console.error(formatCreatingKanboardMessage(config));
     }
   });
-  const server = buildMcpServer(repository);
+  const server = buildMcpServer(repository, config);
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

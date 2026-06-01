@@ -130,7 +130,7 @@ export function assertR2Config(
   if (missingKeys.length > 0) {
     throw new Error(
       `R2 uploads require these environment variables: ${missingKeys.join(", ")}. ` +
-      "Set them in .env to enable task attachments."
+      "Set them in .env to enable attachments."
     );
   }
 

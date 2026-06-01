@@ -22,6 +22,7 @@ Core operating rules:
 - Keep acceptance criteria on user stories.
 - Keep tags, estimates, and implementation notes on tasks.
 - Use node comments for agent-to-agent coordination such as requirements, blockers, and handoff notes.
+- Attach UI mockups (HTML/SVG/PNG) and images to the epic, feature, or task they describe with `upload_attachment`. Keep them on the most specific node that owns the visual.
 - Every epic, feature, story, and task has a durable alias. Prefer aliases for follow-up references instead of raw ids when you need to keep context compact.
 - Feature/task links are first-class objects. Use them instead of burying cross-work dependencies in freeform notes.
 - Use `blocks` links when one feature or task must wait for another feature or task to become `ready` or `done`.
@@ -208,6 +209,10 @@ Task tools:
 - `update_task`: Update a task by `taskId`.
 - `delete_task`: Delete a task.
 
+Attachment tools:
+
+- `upload_attachment`: Attach a UI mockup or image to an epic, feature, or task. Required: `targetType` (`epic`, `feature`, or `task`), `kind` (`image` or `mockup`), `fileName`, `contentType`, and `content`. Identify the target with `targetId` or `targetAlias`. `content` is the file's bytes; send binary images as base64 (the default `encoding`), and send text mockups (HTML/SVG) with `encoding: "utf8"`. Mockups must be `.html`, `.svg`, or `.png`; images must be JPG, PNG, GIF, WebP, or AVIF. The server uploads to object storage and records the attachment on the target.
+
 Link tools:
 
 - `list_links`: List all feature/task links.
@@ -232,6 +237,15 @@ Link tools:
 - Keep comments short and specific to the node they are attached to.
 - Prefer comments over stuffing coordination text into task summaries or the BoardBrief.
 
+## Attachment Usage Guidance
+
+- Use `upload_attachment` to attach a UI mockup or image directly to the node it illustrates — an epic, feature, or task. Stories cannot hold attachments.
+- Send a mockup as `kind: "mockup"`. HTML and SVG mockups are text: pass the markup in `content` with `encoding: "utf8"`. PNG mockups are binary: base64-encode them.
+- Send a screenshot or diagram as `kind: "image"` with base64 `content` (the default encoding).
+- Set `contentType` to the real MIME type (`text/html`, `image/svg+xml`, `image/png`, `image/jpeg`, etc.). The server rejects mismatched extension/type pairs.
+- Prefer attaching to the most specific owning node. A whole-feature wireframe belongs on the feature; a task-specific screenshot belongs on the task.
+- Do not paste large base64 blobs into summaries or comments. Upload them as attachments instead.
+
 ## Suggested Agent Workflow
 
 1. Call `get_taskboard` at session start.
@@ -244,7 +258,8 @@ Link tools:
 8. Create missing hierarchy nodes only where the board does not already represent the work.
 9. Add comments when another agent needs node-local context or a blocker explanation.
 10. Add blocking or related links for cross-feature or cross-task coordination.
-11. Summarize what changed in plain language.
+11. Attach mockups or images with `upload_attachment` when a node has a visual deliverable to share.
+12. Summarize what changed in plain language.
 
 ## Output Style Guidance
 

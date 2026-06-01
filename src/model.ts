@@ -8,7 +8,7 @@ export const workLinkKindValues = ["blocks", "relates-to"] as const;
 export const boardNodeTypeValues = ["epic", "feature", "story", "task"] as const;
 export const commentKindValues = ["note", "requirement", "blocker"] as const;
 export const taskAttachmentKindValues = ["image", "file", "mockup"] as const;
-export const taskAttachmentUploadKindValues = ["image", "mockup"] as const;
+export const taskAttachmentUploadKindValues = taskAttachmentKindValues;
 
 export type WorkStatus = (typeof workStatusValues)[number];
 export type Priority = (typeof priorityValues)[number];
@@ -71,17 +71,24 @@ export const boardBriefPatchSchema = z.object({
 
 export const metadataPatchSchema = boardBriefPatchSchema;
 
-export const createEpicInputSchema = baseCreateSchema;
-export const updateEpicInputSchema = baseUpdateSchema;
+export const createEpicInputSchema = baseCreateSchema.extend({
+  attachments: z.array(taskAttachmentSchema).default([])
+});
+export const updateEpicInputSchema = baseUpdateSchema.extend({
+  attachments: z.array(taskAttachmentSchema).optional()
+});
 
 export const createFeatureInputSchema = baseCreateSchema.extend({
   epicId: idSchema.optional(),
-  epicAlias: aliasInputSchema.optional()
+  epicAlias: aliasInputSchema.optional(),
+  attachments: z.array(taskAttachmentSchema).default([])
 }).refine((value) => value.epicId || value.epicAlias, {
   message: "Provide epicId or epicAlias.",
   path: ["epicId"]
 });
-export const updateFeatureInputSchema = baseUpdateSchema;
+export const updateFeatureInputSchema = baseUpdateSchema.extend({
+  attachments: z.array(taskAttachmentSchema).optional()
+});
 
 export const createUserStoryInputSchema = baseCreateSchema.extend({
   featureId: idSchema.optional(),
@@ -115,14 +122,12 @@ export const updateTaskInputSchema = baseUpdateSchema.extend({
   assignedTo: assigneeSchema
 });
 
-export const createTaskUploadInputSchema = z.object({
-  kind: taskAttachmentUploadKindSchema,
-  fileName: z.string().min(1).max(240),
-  contentType: z.string().min(1).max(200),
-  size: z.coerce.number().int().nonnegative().optional(),
-  relativePath: z.string().min(1).max(1000).optional(),
-  attachmentId: z.string().min(1).max(120).optional()
-}).superRefine((value, ctx) => {
+// Shared file-shape validation for both the browser presigned-upload flow and
+// the agent direct-upload flow, so the two paths can never drift apart.
+function validateAttachmentFileShape(
+  value: { kind: TaskAttachmentKind; fileName: string; contentType: string },
+  ctx: z.RefinementCtx
+): void {
   const fileName = value.fileName.toLowerCase();
   const contentType = value.contentType.toLowerCase();
 
@@ -158,7 +163,35 @@ export const createTaskUploadInputSchema = z.object({
       });
     }
   }
-});
+}
+
+export const createAttachmentUploadInputSchema = z.object({
+  kind: taskAttachmentUploadKindSchema,
+  fileName: z.string().min(1).max(240),
+  contentType: z.string().min(1).max(200),
+  size: z.coerce.number().int().nonnegative().optional(),
+  relativePath: z.string().min(1).max(1000).optional(),
+  attachmentId: z.string().min(1).max(120).optional()
+}).superRefine(validateAttachmentFileShape);
+export const createTaskUploadInputSchema = createAttachmentUploadInputSchema;
+
+// Agents can attach mockups and images (not arbitrary files) to any epic,
+// feature, or task. Unlike the browser flow they send bytes inline rather than
+// PUTting to a presigned URL, so the server uploads to R2 on their behalf.
+const agentUploadKindSchema = z.enum(["image", "mockup"]);
+export const uploadAttachmentInputSchema = z.object({
+  targetType: workItemTypeSchema.or(z.literal("epic")),
+  targetId: idSchema.optional(),
+  targetAlias: aliasInputSchema.optional(),
+  kind: agentUploadKindSchema,
+  fileName: z.string().min(1).max(240),
+  contentType: z.string().min(1).max(200),
+  content: z.string().min(1).max(24_000_000),
+  encoding: z.enum(["base64", "utf8"]).default("base64")
+}).refine((value) => value.targetId || value.targetAlias, {
+  message: "Provide targetId or targetAlias.",
+  path: ["targetId"]
+}).superRefine((value, ctx) => validateAttachmentFileShape(value, ctx));
 
 export const resolveNodeInputSchema = z.object({
   type: boardNodeTypeSchema,
@@ -242,7 +275,8 @@ export type CreateUserStoryInput = z.infer<typeof createUserStoryInputSchema>;
 export type UpdateUserStoryInput = z.infer<typeof updateUserStoryInputSchema>;
 export type CreateTaskInput = z.infer<typeof createTaskInputSchema>;
 export type UpdateTaskInput = z.infer<typeof updateTaskInputSchema>;
-export type CreateTaskUploadInput = z.infer<typeof createTaskUploadInputSchema>;
+export type CreateTaskUploadInput = z.infer<typeof createAttachmentUploadInputSchema>;
+export type UploadAttachmentInput = z.infer<typeof uploadAttachmentInputSchema>;
 export type CreateNodeCommentInput = z.infer<typeof createNodeCommentInputSchema>;
 export type UpdateNodeCommentInput = z.infer<typeof updateNodeCommentInputSchema>;
 export type CreateWorkLinkInput = z.infer<typeof createWorkLinkInputSchema>;
@@ -333,11 +367,13 @@ export interface BaseEntity {
 
 export interface Epic extends BaseEntity {
   featureIds: string[];
+  attachments: TaskAttachment[];
 }
 
 export interface Feature extends BaseEntity {
   epicId: string;
   storyIds: string[];
+  attachments: TaskAttachment[];
 }
 
 export interface UserStory extends BaseEntity {
@@ -595,8 +631,24 @@ export function normalizeTaskboardDocument(value: unknown): TaskboardDocument {
         .slice(-100)
     : [];
   const usedAliases = new Set<string>();
-  const epics = normalizeEntityRecord(document.epics, usedAliases);
-  const features = normalizeEntityRecord(document.features, usedAliases);
+  const epics = Object.fromEntries(
+    Object.entries(normalizeEntityRecord(document.epics, usedAliases)).map(([id, epic]) => [
+      id,
+      {
+        ...epic,
+        attachments: normalizeTaskAttachments((epic as Epic).attachments)
+      }
+    ])
+  ) as Record<string, Epic>;
+  const features = Object.fromEntries(
+    Object.entries(normalizeEntityRecord(document.features, usedAliases)).map(([id, feature]) => [
+      id,
+      {
+        ...feature,
+        attachments: normalizeTaskAttachments((feature as Feature).attachments)
+      }
+    ])
+  ) as Record<string, Feature>;
   const userStories = normalizeEntityRecord(document.userStories, usedAliases);
   const tasks = Object.fromEntries(
     Object.entries(normalizeEntityRecord(document.tasks, usedAliases)).map(([id, task]) => [
