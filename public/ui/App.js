@@ -13,6 +13,29 @@ import { RecycleBinPane } from "./RecycleBinPane.js";
 
 const html = htm.bind(React.createElement);
 
+// Return a copy of the taskboard with one task's status changed, rebuilding only
+// the branch from the owning epic down to the task so React re-renders the moved
+// card without mutating the existing snapshot. Used for optimistic drag-and-drop.
+function withTaskStatus(taskboard, taskId, status) {
+  if (!taskboard) return taskboard;
+  let changed = false;
+  const epics = taskboard.epics.map((epic) => ({
+    ...epic,
+    features: epic.features.map((feature) => ({
+      ...feature,
+      userStories: feature.userStories.map((story) => ({
+        ...story,
+        tasks: story.tasks.map((task) => {
+          if (task.id !== taskId || task.status === status) return task;
+          changed = true;
+          return { ...task, status };
+        })
+      }))
+    }))
+  }));
+  return changed ? { ...taskboard, epics } : taskboard;
+}
+
 // --- Skeleton Components ---
 function SkeletonBoard() {
   return html`
@@ -424,14 +447,18 @@ export function App() {
   async function moveTask(taskId, status) {
     const task = lookup.findTask(taskId);
     if (!task || task.status === status) return;
-    setPendingOp(true);
+
+    // Snap the card to the target column immediately, remembering the prior
+    // board so we can roll back if the server rejects the move. No pendingOp/
+    // spinner here — the optimistic update is the feedback.
+    const previousBoard = taskboardRef.current;
+    setTaskboard((current) => withTaskStatus(current, taskId, status));
     try {
       await request(`/api/tasks/${taskId}`, { method: "PATCH", body: JSON.stringify({ status }) });
       await reload();
     } catch (err) {
+      setTaskboard(previousBoard);
       setFlashError(getErrorMessage(err));
-    } finally {
-      setPendingOp(false);
     }
   }
 

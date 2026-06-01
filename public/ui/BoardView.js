@@ -38,6 +38,16 @@ function userInitials(name) {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
+function modifiedTime(ctx) {
+  const value = ctx.task.updatedAt || ctx.task.createdAt || "";
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? time : 0;
+}
+
+function compareByLastModified(left, right) {
+  return modifiedTime(right) - modifiedTime(left);
+}
+
 function MetaChip({ updatedBy, updatedAt, updatedVia, usersMap }) {
   if (!updatedBy && !updatedAt) return null;
   const isAgent = updatedVia === "mcp";
@@ -95,7 +105,8 @@ export function BoardView({ taskboard, filters, onFilterChange, onAddTask, onTas
       if (terms.length && !terms.every((t) => haystack.includes(t))) return false;
       return true;
     })
-    .map(({ ctx }) => ctx);
+    .map(({ ctx }) => ctx)
+    .sort(compareByLastModified);
 
   return html`
     <section className="view-shell view-shell--board">
