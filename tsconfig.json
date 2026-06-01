@@ -2,8 +2,8 @@
   "compilerOptions": {
     "target": "ES2022",
     "module": "CommonJS",
-    // "moduleResolution": "Node",
-    // "ignoreDeprecations": "6.0",
+    // moduleResolution intentionally omitted: it's inferred from module=CommonJS.
+    // Setting it explicitly (node10/"Node") is deprecated and needs ignoreDeprecations.
     "rootDir": "src",
     "outDir": "dist",
     "strict": true,

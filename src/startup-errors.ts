@@ -38,8 +38,21 @@ export function isTeamBoardEmptyError(error: unknown): error is TeamBoardEmptyEr
   return error instanceof TeamBoardEmptyError;
 }
 
+// The DB connection string/token is the team trust boundary. Storage-client
+// errors can embed it in their message, and startup errors are the thing users
+// paste into chats or screenshot when asking for help — scrub the literal
+// secret values before any of this reaches the console.
+function redactSecrets(message: string, config?: AppConfig): string {
+  if (!config) return message;
+  let redacted = message;
+  for (const secret of [config.dbString, config.redisToken, config.redisUrl]) {
+    if (secret) redacted = redacted.split(secret).join("[redacted]");
+  }
+  return redacted;
+}
+
 export function formatStartupError(serverName: string, error: unknown, config?: AppConfig): string {
-  const message = error instanceof Error ? error.message : String(error);
+  const message = redactSecrets(error instanceof Error ? error.message : String(error), config);
 
   if (!(error instanceof RepositoryConflictError)) {
     return `Failed to start ${serverName}: ${message}`;

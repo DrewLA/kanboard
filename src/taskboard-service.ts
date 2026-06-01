@@ -1,6 +1,7 @@
 import {
   BoardBrief,
   BoardBriefPatch,
+  BaseEntity,
   BoardNodeSummary,
   BoardNodeType,
   CreateNodeCommentInput,
@@ -146,7 +147,8 @@ function buildEntityAlias(document: TaskboardDocument, explicitAlias: string | u
   let alias = baseAlias;
   let counter = 2;
 
-  while (findNodeByAlias(document, alias) && findNodeByAlias(document, alias)?.id !== excludedId) {
+  // findNodeByAlias scans every node, so resolve it once per iteration.
+  for (let existing = findNodeByAlias(document, alias); existing && existing.id !== excludedId; existing = findNodeByAlias(document, alias)) {
     alias = `${baseAlias}-${counter}`;
     counter += 1;
   }
@@ -1739,10 +1741,23 @@ interface RecyclePayload {
   tasks?: Task[];
 }
 
+// An alias freed by deletion can be reclaimed by another node before restore.
+// Reusing the stored alias verbatim would then give two nodes the same alias,
+// and findNodeByAlias would silently resolve to whichever it scans first. Call
+// this AFTER inserting the entity into the document: findNodeByAlias then sees
+// the entity itself (matched by id and excluded) plus any genuine collision,
+// and we suffix only when a different node already holds the alias.
+function ensureRestoredAlias(document: TaskboardDocument, entity: BaseEntity): void {
+  const existing = findNodeByAlias(document, entity.alias);
+  if (!existing || existing.id === entity.id) return;
+  entity.alias = buildEntityAlias(document, undefined, entity.alias || entity.title, entity.id, entity.id);
+}
+
 function reinsertTasks(document: TaskboardDocument, tasks: Task[] | undefined): void {
   if (!tasks?.length) return;
   for (const task of tasks) {
     document.tasks[task.id] = task;
+    ensureRestoredAlias(document, task);
     const story = document.userStories[task.storyId];
     if (story && !story.taskIds.includes(task.id)) story.taskIds.push(task.id);
   }
@@ -1752,6 +1767,7 @@ function reinsertStories(document: TaskboardDocument, stories: UserStory[] | und
   if (!stories?.length) return;
   for (const story of stories) {
     document.userStories[story.id] = story;
+    ensureRestoredAlias(document, story);
     const feature = document.features[story.featureId];
     if (feature && !feature.storyIds.includes(story.id)) feature.storyIds.push(story.id);
   }
@@ -1761,6 +1777,7 @@ function reinsertFeatures(document: TaskboardDocument, features: Feature[] | und
   if (!features?.length) return;
   for (const feature of features) {
     document.features[feature.id] = feature;
+    ensureRestoredAlias(document, feature);
     const epic = document.epics[feature.epicId];
     if (epic && !epic.featureIds.includes(feature.id)) epic.featureIds.push(feature.id);
   }
@@ -1801,6 +1818,7 @@ export async function restoreFromRecycleBin(repository: TaskboardRepository, ent
           const story = requireStory(nextDocument, entry.parentContext.id);
           const task = payload.primary as Task;
           nextDocument.tasks[task.id] = task;
+          ensureRestoredAlias(nextDocument, task);
           if (!story.taskIds.includes(task.id)) story.taskIds.push(task.id);
           touchStoryLineage(nextDocument, story, timestamp);
           restoredId = task.id;
@@ -1814,6 +1832,7 @@ export async function restoreFromRecycleBin(repository: TaskboardRepository, ent
           const feature = requireFeature(nextDocument, entry.parentContext.id);
           const story = payload.primary as UserStory;
           nextDocument.userStories[story.id] = story;
+          ensureRestoredAlias(nextDocument, story);
           if (!feature.storyIds.includes(story.id)) feature.storyIds.push(story.id);
           reinsertTasks(nextDocument, payload.tasks);
           touchFeatureLineage(nextDocument, feature, timestamp);
@@ -1828,6 +1847,7 @@ export async function restoreFromRecycleBin(repository: TaskboardRepository, ent
           const epic = requireEpic(nextDocument, entry.parentContext.id);
           const feature = payload.primary as Feature;
           nextDocument.features[feature.id] = feature;
+          ensureRestoredAlias(nextDocument, feature);
           if (!epic.featureIds.includes(feature.id)) epic.featureIds.push(feature.id);
           reinsertStories(nextDocument, payload.stories);
           reinsertTasks(nextDocument, payload.tasks);
@@ -1839,6 +1859,7 @@ export async function restoreFromRecycleBin(repository: TaskboardRepository, ent
         if (entry.entityType === "epic") {
           const epic = payload.primary as Epic;
           nextDocument.epics[epic.id] = epic;
+          ensureRestoredAlias(nextDocument, epic);
           if (!nextDocument.epicIds.includes(epic.id)) nextDocument.epicIds.push(epic.id);
           reinsertFeatures(nextDocument, payload.features);
           reinsertStories(nextDocument, payload.stories);
