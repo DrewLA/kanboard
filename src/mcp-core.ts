@@ -3,7 +3,12 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { ZodError } from "zod";
 
 import {
+  addAcceptanceCriterionInputSchema,
   boardBriefPatchSchema,
+  checkAcceptanceCriterionInputSchema,
+  deleteAcceptanceCriterionInputSchema,
+  reorderAcceptanceCriteriaInputSchema,
+  updateAcceptanceCriterionInputSchema,
   createNodeCommentInputSchema,
   createEpicInputSchema,
   createFeatureInputSchema,
@@ -59,6 +64,11 @@ import {
   updateEpic,
   updateFeature,
   updateNodeComment,
+  addAcceptanceCriterion,
+  checkAcceptanceCriterion,
+  deleteAcceptanceCriterion,
+  reorderAcceptanceCriteria,
+  updateAcceptanceCriterion,
   updateTask,
   updateUserStory,
   updateWorkLink,
@@ -400,6 +410,19 @@ export const toolDefinitions = [
         priority: { type: "string" },
         implementationNotes: { type: "string" },
         estimate: { type: "string" },
+        acceptanceCriteria: {
+          type: "array",
+          description: "Acceptance criteria for this task.",
+          items: {
+            type: "object",
+            required: ["text"],
+            properties: {
+              text: { type: "string", description: "The criterion text." },
+              done: { type: "boolean", description: "Whether this criterion is met. Defaults to false." }
+            },
+            additionalProperties: false
+          }
+        },
         tags: { type: "array", items: { type: "string" } },
         assignedTo: { type: "string" }
       },
@@ -423,6 +446,74 @@ export const toolDefinitions = [
         estimate: { type: "string" },
         tags: { type: "array", items: { type: "string" } },
         assignedTo: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "check_acceptance_criterion",
+    description: "Mark one acceptance criterion done or not done.",
+    inputSchema: {
+      type: "object",
+      required: ["taskId", "criterionId", "done"],
+      properties: {
+        taskId: { type: "string" },
+        criterionId: { type: "string" },
+        done: { type: "boolean" }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "add_acceptance_criterion",
+    description: "Append a new acceptance criterion to a task. Returns the new criterion including its id.",
+    inputSchema: {
+      type: "object",
+      required: ["taskId", "text"],
+      properties: {
+        taskId: { type: "string" },
+        text: { type: "string" },
+        done: { type: "boolean" }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "update_acceptance_criterion",
+    description: "Update the text of one acceptance criterion.",
+    inputSchema: {
+      type: "object",
+      required: ["taskId", "criterionId", "text"],
+      properties: {
+        taskId: { type: "string" },
+        criterionId: { type: "string" },
+        text: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "delete_acceptance_criterion",
+    description: "Delete one acceptance criterion from a task.",
+    inputSchema: {
+      type: "object",
+      required: ["taskId", "criterionId"],
+      properties: {
+        taskId: { type: "string" },
+        criterionId: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "reorder_acceptance_criteria",
+    description: "Reorder a task's acceptance criteria. Provide all existing criterion ids in the desired order — all must be present, use delete_acceptance_criterion to remove items first.",
+    inputSchema: {
+      type: "object",
+      required: ["taskId", "criterionIds"],
+      properties: {
+        taskId: { type: "string" },
+        criterionIds: { type: "array", items: { type: "string" } }
       },
       additionalProperties: false
     }
@@ -753,6 +844,26 @@ export function buildMcpServer(repository: TaskboardRepository, config: AppConfi
         }
         case "delete_task":
           return toText(await deleteTask(repository, String((args as { taskId: string }).taskId)));
+        case "check_acceptance_criterion": {
+          const { taskId, criterionId, done } = checkAcceptanceCriterionInputSchema.parse(args);
+          return toText(await checkAcceptanceCriterion(repository, taskId, criterionId, done));
+        }
+        case "add_acceptance_criterion": {
+          const { taskId, text, done } = addAcceptanceCriterionInputSchema.parse(args);
+          return toText(await addAcceptanceCriterion(repository, taskId, text, done));
+        }
+        case "update_acceptance_criterion": {
+          const { taskId, criterionId, text } = updateAcceptanceCriterionInputSchema.parse(args);
+          return toText(await updateAcceptanceCriterion(repository, taskId, criterionId, text));
+        }
+        case "delete_acceptance_criterion": {
+          const { taskId, criterionId } = deleteAcceptanceCriterionInputSchema.parse(args);
+          return toText(await deleteAcceptanceCriterion(repository, taskId, criterionId));
+        }
+        case "reorder_acceptance_criteria": {
+          const { taskId, criterionIds } = reorderAcceptanceCriteriaInputSchema.parse(args);
+          return toText(await reorderAcceptanceCriteria(repository, taskId, criterionIds));
+        }
         case "list_tasks": {
           const parsed = args as { storyId?: string; storyAlias?: string };
           return toText(await listTasks(repository, parsed.storyId, parsed.storyAlias));

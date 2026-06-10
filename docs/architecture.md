@@ -52,8 +52,29 @@ Reads for both paths stream through the local server (`GET /api/{epics|features|
 
 Tasks carry additional fields beyond the base entity:
 
+- `implementationNotes`: freeform execution detail for the task (string, up to 4000 chars)
+- `estimate`: effort estimate expressed as any string the team uses — story points, t-shirt size, hours (string, up to 120 chars)
+- `tags`: arbitrary labels for filtering and grouping (string array)
 - `assignedTo`: user ID of the assigned team member (optional)
-- `authorId`: user ID of the first editor — set at creation time, never overwritten (optional, not shown in UI yet)
+- `acceptanceCriteria`: structured list of verifiable done-conditions (see below)
+
+#### Acceptance criteria
+
+Each criterion is stored as `{ id, text, done }`:
+
+- `id` — stable server-generated id (`ac_<uuid>`). Assigned on creation; preserved across updates as long as the item stays in the list.
+- `text` — the criterion text (string, up to 500 chars)
+- `done` — whether the criterion has been met (boolean)
+
+Criterion ids are stable for the lifetime of the item. The MCP layer exposes dedicated per-item tools so agents never need to reconstruct the full list:
+
+- `add_acceptance_criterion` — append one item, returns the new criterion with its id
+- `check_acceptance_criterion` — toggle `done` on one item by id
+- `update_acceptance_criterion` — edit one item's text by id
+- `delete_acceptance_criterion` — remove one item by id
+- `reorder_acceptance_criteria` — reorder by providing all existing ids in the desired order
+
+`update_task` (via REST) accepts a full `acceptanceCriteria` replacement for the UI's form-save path. That path does id-preservation: items whose id matches an existing criterion keep it; items without an id get a fresh server-generated one; an unrecognised id is an error. MCP agents should not use this path — use the dedicated tools instead.
 
 ## Persistence model
 

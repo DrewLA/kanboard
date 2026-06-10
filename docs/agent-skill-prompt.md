@@ -19,7 +19,7 @@ Core operating rules:
 - When creating child items, always attach them to the correct parent.
 - Use statuses from this fixed set: `pending`, `ready`, `in-progress`, `review`, `blocked`, `done`.
 - Use priorities from this fixed set: `low`, `medium`, `high`, `critical`.
-- Keep acceptance criteria on user stories.
+- Keep acceptance criteria on tasks.
 - Keep tags, estimates, and implementation notes on tasks.
 - Use node comments for agent-to-agent coordination such as requirements, blockers, and handoff notes.
 - Attach UI mockups (HTML/SVG/PNG) and images to the epic, feature, or task they describe with `upload_attachment`. Keep them on the most specific node that owns the visual.
@@ -139,8 +139,8 @@ Once the server is up and the MCP client is connected, retry `get_taskboard` to 
 4. Check whether the work belongs to an existing epic, feature, story, or task before creating anything new.
 5. Create or update epics for major outcomes.
 6. Create or update features under the correct epic.
-7. Create or update user stories under the correct feature with explicit acceptance criteria.
-8. Create or update tasks under the correct story with implementation notes, tags, and estimates when useful.
+7. Create or update user stories under the correct feature.
+8. Create or update tasks under the correct story with implementation notes, tags, estimates, and acceptance criteria.
 9. Leave node comments when another agent needs to know a requirement, blocker, or handoff detail tied to a specific node.
 10. If delivery depends on another feature or task, create a link instead of duplicating dependency text in summaries.
 
@@ -205,8 +205,13 @@ Task tools:
 
 - `list_tasks`: List tasks, optionally scoped by `storyId` or `storyAlias`.
 - `get_task`: Read one task by `taskId`.
-- `create_task`: Create a task under a story. Required: `title` plus `storyId` or `storyAlias`. Optional: `alias`.
-- `update_task`: Update a task by `taskId`.
+- `create_task`: Create a task under a story. Required: `title` plus `storyId` or `storyAlias`. Optional: `alias`, `summary`, `status`, `priority`, `implementationNotes`, `estimate`, `tags`, `assignedTo`, `acceptanceCriteria` (array of `{ text, done? }` — no ids on create).
+- `update_task`: Update a task by `taskId`. Does not accept `acceptanceCriteria` — use the dedicated AC tools below.
+- `add_acceptance_criterion`: Append one criterion. Required: `taskId`, `text`. Optional: `done`. Returns the new criterion including its id.
+- `update_acceptance_criterion`: Edit one criterion's text. Required: `taskId`, `criterionId`, `text`.
+- `check_acceptance_criterion`: Toggle done state. Required: `taskId`, `criterionId`, `done`.
+- `delete_acceptance_criterion`: Remove one criterion. Required: `taskId`, `criterionId`.
+- `reorder_acceptance_criteria`: Reorder the list. Required: `taskId`, `criterionIds` (all existing ids in desired order). Use `delete_acceptance_criterion` to remove items before reordering.
 - `delete_task`: Delete a task.
 
 Attachment tools:
@@ -236,6 +241,19 @@ Link tools:
 - Use `kind=note` for concise handoff context that does not change scheduling state.
 - Keep comments short and specific to the node they are attached to.
 - Prefer comments over stuffing coordination text into task summaries or the BoardBrief.
+
+## Acceptance Criteria Guidance
+
+Acceptance criteria live on tasks. `get_task` returns them as `{ id, text, done }[]`. Criterion ids are stable for the lifetime of the item.
+
+- Write criteria as concrete, independently verifiable statements. "User can log in with valid credentials" is good; "login works" is not.
+- `add_acceptance_criterion` — append one item. Returns `{ id, text, done }`. Cache the id for subsequent calls.
+- `check_acceptance_criterion` — toggle `done` on one item. One call, no read needed.
+- `update_acceptance_criterion` — edit one item's text. One call.
+- `delete_acceptance_criterion` — remove one item. One call.
+- `reorder_acceptance_criteria` — change order. Pass all existing ids in the desired order; delete first if shrinking.
+- Do not call `update_task` to manipulate acceptance criteria — use the dedicated tools above.
+- Do not duplicate criteria text in the task summary or implementation notes.
 
 ## Attachment Usage Guidance
 

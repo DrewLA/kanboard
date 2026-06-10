@@ -102,11 +102,46 @@ export const updateUserStoryInputSchema = baseUpdateSchema.extend({
   acceptanceCriteria: z.array(z.string().max(500)).optional()
 });
 
+export const acceptanceCriterionInputSchema = z.object({
+  id: z.string().optional(),
+  text: z.string().min(1).max(500),
+  done: z.boolean().default(false)
+});
+
+export const checkAcceptanceCriterionInputSchema = z.object({
+  taskId: idSchema,
+  criterionId: idSchema,
+  done: z.boolean()
+});
+
+export const addAcceptanceCriterionInputSchema = z.object({
+  taskId: idSchema,
+  text: z.string().min(1).max(500),
+  done: z.boolean().default(false)
+});
+
+export const updateAcceptanceCriterionInputSchema = z.object({
+  taskId: idSchema,
+  criterionId: idSchema,
+  text: z.string().min(1).max(500)
+});
+
+export const deleteAcceptanceCriterionInputSchema = z.object({
+  taskId: idSchema,
+  criterionId: idSchema
+});
+
+export const reorderAcceptanceCriteriaInputSchema = z.object({
+  taskId: idSchema,
+  criterionIds: z.array(idSchema).min(1)
+});
+
 export const createTaskInputSchema = baseCreateSchema.extend({
   storyId: idSchema.optional(),
   storyAlias: aliasInputSchema.optional(),
   implementationNotes: z.string().max(4000).default(""),
   estimate: z.string().max(120).default(""),
+  acceptanceCriteria: z.array(acceptanceCriterionInputSchema).default([]),
   tags: z.array(z.string().max(40)).default([]),
   attachments: z.array(taskAttachmentSchema).default([]),
   assignedTo: assigneeSchema
@@ -117,6 +152,7 @@ export const createTaskInputSchema = baseCreateSchema.extend({
 export const updateTaskInputSchema = baseUpdateSchema.extend({
   implementationNotes: z.string().max(4000).optional(),
   estimate: z.string().max(120).optional(),
+  acceptanceCriteria: z.array(acceptanceCriterionInputSchema).optional(),
   tags: z.array(z.string().max(40)).optional(),
   attachments: z.array(taskAttachmentSchema).optional(),
   assignedTo: assigneeSchema
@@ -273,6 +309,12 @@ export type CreateFeatureInput = z.infer<typeof createFeatureInputSchema>;
 export type UpdateFeatureInput = z.infer<typeof updateFeatureInputSchema>;
 export type CreateUserStoryInput = z.infer<typeof createUserStoryInputSchema>;
 export type UpdateUserStoryInput = z.infer<typeof updateUserStoryInputSchema>;
+export type AcceptanceCriterionInput = z.infer<typeof acceptanceCriterionInputSchema>;
+export type CheckAcceptanceCriterionInput = z.infer<typeof checkAcceptanceCriterionInputSchema>;
+export type AddAcceptanceCriterionInput = z.infer<typeof addAcceptanceCriterionInputSchema>;
+export type UpdateAcceptanceCriterionInput = z.infer<typeof updateAcceptanceCriterionInputSchema>;
+export type DeleteAcceptanceCriterionInput = z.infer<typeof deleteAcceptanceCriterionInputSchema>;
+export type ReorderAcceptanceCriteriaInput = z.infer<typeof reorderAcceptanceCriteriaInputSchema>;
 export type CreateTaskInput = z.infer<typeof createTaskInputSchema>;
 export type UpdateTaskInput = z.infer<typeof updateTaskInputSchema>;
 export type CreateTaskUploadInput = z.infer<typeof createAttachmentUploadInputSchema>;
@@ -395,9 +437,16 @@ export interface TaskAttachment {
   uploadedBy?: string;
 }
 
+export interface AcceptanceCriterion {
+  id: string;
+  text: string;
+  done: boolean;
+}
+
 export interface Task extends BaseEntity {
   storyId: string;
   implementationNotes: string;
+  acceptanceCriteria: AcceptanceCriterion[];
   estimate: string;
   tags: string[];
   attachments: TaskAttachment[];

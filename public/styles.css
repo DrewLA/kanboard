@@ -1115,6 +1115,79 @@ textarea {
   letter-spacing: 0.02em;
 }
 
+/* ---- Acceptance Criteria field ---- */
+.ac-checklist {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 34px;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  cursor: text;
+  transition: border-color 140ms ease;
+}
+
+.ac-checklist:hover {
+  border-color: var(--line-strong);
+}
+
+.ac-placeholder {
+  color: var(--text-muted);
+  font-size: 13px;
+  font-style: italic;
+  line-height: 1.5;
+  pointer-events: none;
+}
+
+.ac-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  line-height: 1.45;
+}
+
+.ac-item--checked .ac-item-text {
+  opacity: 0.4;
+  text-decoration: line-through;
+}
+
+.ac-checkbox-btn {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  border-radius: 3px;
+  transition: color 120ms ease;
+}
+
+.ac-checkbox-btn:hover {
+  color: var(--text);
+}
+
+.ac-item-text {
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.ac-item-text code {
+  font-size: 0.85em;
+  background: rgba(255, 255, 255, 0.07);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+
+
 .textarea-expand-btn:hover {
   background: rgba(255, 255, 255, 0.14);
   color: #ffffff;
@@ -1541,7 +1614,7 @@ select:focus {
 }
 
 .modal-shell {
-  width: min(800px, calc(100vw - 32px));
+  width: min(880px, calc(100vw - 32px));
   min-height: min(560px, 70vh);
   border-radius: var(--radius-lg);
   border: 1px solid var(--line-strong);

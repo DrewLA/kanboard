@@ -275,6 +275,126 @@ function ExpandableTextarea({ name, rows, defaultValue, inputRef, markdownPrevie
   `;
 }
 
+// ---- Acceptance Criteria field ----
+// Preview mode: static checklist (SVG icons, fully clickable, no stopPropagation traps).
+function acLocalKey() {
+  return Math.random().toString(36).slice(2, 10);
+}
+
+function parseAcTexts(raw) {
+  return String(raw || "")
+    .split(/[\n,]+/)
+    .map((l) => l.replace(/^[-*+•]\s*/, "").trim())
+    .filter(Boolean);
+}
+
+// Each item carries:
+//   _key  — stable React key, never submitted
+//   id    — server-assigned id, present only for items that came from the server
+//   text, done
+function toAcItems(defaultValue) {
+  if (!Array.isArray(defaultValue)) return [];
+  return defaultValue.map((c) =>
+    typeof c === "string"
+      ? { _key: acLocalKey(), id: undefined, text: c, done: false }
+      : { _key: c.id || acLocalKey(), id: c.id || undefined, text: c.text, done: !!c.done }
+  );
+}
+
+// Reconcile textarea lines with existing items: preserve server id + done for
+// unchanged text, create client-only new items (no server id) for new text.
+function reconcileAcItems(texts, prevItems) {
+  const byText = new Map();
+  for (const c of prevItems) {
+    if (!byText.has(c.text)) byText.set(c.text, c);
+  }
+  const used = new Set();
+  return texts.map((text) => {
+    const existing = byText.get(text);
+    if (existing && !used.has(existing._key)) {
+      used.add(existing._key);
+      return existing;
+    }
+    return { _key: acLocalKey(), id: undefined, text, done: false };
+  });
+}
+
+function AcceptanceCriteriaField({ name, defaultValue = [] }) {
+  const [editing, setEditing] = useState(false);
+  const [items, setItems] = useState(() => toAcItems(defaultValue));
+  const taRef = useRef(null);
+
+  useEffect(() => {
+    setItems(toAcItems(defaultValue));
+    setEditing(false);
+  }, [name, JSON.stringify(defaultValue)]);
+
+  function startEditing() {
+    setEditing(true);
+    requestAnimationFrame(() => {
+      if (taRef.current) {
+        taRef.current.value = items.map((c) => c.text).join("\n");
+        taRef.current.focus();
+      }
+    });
+  }
+
+  function commitEdit() {
+    const texts = parseAcTexts(taRef.current?.value || "");
+    setItems((prev) => reconcileAcItems(texts, prev));
+    setEditing(false);
+  }
+
+  function toggleDone(_key, e) {
+    e.stopPropagation();
+    setItems((prev) => prev.map((c) => c._key === _key ? { ...c, done: !c.done } : c));
+  }
+
+  const empty = items.length === 0;
+  // Send server id only for existing items; new items omit id so the server
+  // assigns one. Sending an unknown id would be an error.
+  const serialized = JSON.stringify(items.map(({ id, text, done }) =>
+    id ? { id, text, done } : { text, done }
+  ));
+
+  return html`
+    <div className="ac-field">
+      <input type="hidden" name=${name} value=${serialized} />
+      <textarea
+        ref=${taRef}
+        rows="4"
+        style=${{ display: editing ? "" : "none" }}
+        placeholder=${"One per line or comma-separated\n— User can log in\n— Error is shown on failure"}
+        onBlur=${commitEdit}
+        onKeyDown=${(e) => e.key === "Escape" && commitEdit()}
+      ></textarea>
+      ${!editing ? html`
+        <div className="ac-checklist" onClick=${startEditing} title="Click to edit">
+          ${empty
+            ? html`<span className="ac-placeholder">Acceptance criteria — one per line or comma-separated</span>`
+            : items.map((item) => html`
+              <div key=${item._key} className=${`ac-item${item.done ? " ac-item--checked" : ""}`}>
+                <button
+                  type="button"
+                  className="ac-checkbox-btn"
+                  aria-label=${item.done ? "Uncheck" : "Check"}
+                  onClick=${(e) => toggleDone(item._key, e)}
+                >
+                  ${item.done
+                    ? html`<svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><rect x="0.75" y="0.75" width="10.5" height="10.5" rx="2" fill="var(--accent)" stroke="var(--accent)" stroke-width="1.2"/><path d="M3 6l2.5 2.5L9 4" stroke="#fff" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`
+                    : html`<svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><rect x="0.75" y="0.75" width="10.5" height="10.5" rx="2" stroke="currentColor" stroke-width="1.2"/></svg>`
+                  }
+                </button>
+                <span className="ac-item-text">${renderInlineMarkdown(item.text, `ac-${item._key}`)}</span>
+              </div>
+            `)
+          }
+        </div>
+      ` : null}
+    </div>
+  `;
+}
+
 function renderInlineMarkdown(text, keyPrefix = "md") {
   if (typeof text !== "string" || !text) return text || "";
 
@@ -1133,6 +1253,13 @@ function buildModalBody(modal, taskboard, activeFilters, lookup, onSwitchModal, 
           markdownPreview=${modal.type === "edit-task"}
         />
       </div>
+      <div className="form-field">
+        <span>Acceptance criteria</span>
+        <${AcceptanceCriteriaField}
+          name="acceptanceCriteria"
+          defaultValue=${sv.acceptanceCriteria != null ? sv.acceptanceCriteria : (liveTask?.acceptanceCriteria ?? t.acceptanceCriteria ?? [])}
+        />
+      </div>
       <div className="form-row">
         <label>Estimate<input name="estimate" defaultValue=${sv.estimate ?? t.estimate ?? ""} /></label>
         <label>Tags (comma-separated)<input name="tags" defaultValue=${sv.tags ?? (t.tags || []).join(", ")} /></label>
@@ -1382,7 +1509,7 @@ export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit
           height: shellRef.current.offsetHeight,
         }
       : {
-          width: Math.min(800, window.innerWidth - 32),
+          width: Math.min(880, window.innerWidth - 32),
           height: Math.max(560, Math.min(window.innerHeight - 40, 720)),
         };
 
@@ -1472,9 +1599,9 @@ export function FormModal({ modal, stackDepth = 1, onClose, onCloseAll, onSubmit
     const startY = e.clientY;
     const startW = rect.width;
     const startH = rect.height;
-    const MIN_W = 600; // 75% of default 800px
+    const MIN_W = 660; // 75% of default 880px
     const MIN_H = 420; // 75% of default min-height 560px
-    const MAX_W = Math.min(1200, window.innerWidth - PANE_W - PANE_GAP - EDGE_PAD * 2); // never wider than viewport with comments open
+    const MAX_W = Math.min(1280, window.innerWidth - PANE_W - PANE_GAP - EDGE_PAD * 2); // never wider than viewport with comments open
     const MAX_H = Math.min(840, window.innerHeight - 64); // 150% of default 560px
 
     resizingRef.current = true;

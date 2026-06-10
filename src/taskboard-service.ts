@@ -1,9 +1,15 @@
 import {
+  AcceptanceCriterion,
+  AddAcceptanceCriterionInput,
   BoardBrief,
   BoardBriefPatch,
   BaseEntity,
   BoardNodeSummary,
   BoardNodeType,
+  CheckAcceptanceCriterionInput,
+  DeleteAcceptanceCriterionInput,
+  ReorderAcceptanceCriteriaInput,
+  UpdateAcceptanceCriterionInput,
   CreateNodeCommentInput,
   CreateEpicInput,
   CreateFeatureInput,
@@ -1508,6 +1514,11 @@ export async function createTask(
       attachments: input.attachments,
       implementationNotes: input.implementationNotes,
       estimate: input.estimate,
+      acceptanceCriteria: input.acceptanceCriteria.map((c) => ({
+        id: createId("ac"),
+        text: c.text,
+        done: c.done
+      })),
       tags: input.tags,
       assignedTo: input.assignedTo,
       author: activeMutationEditor,
@@ -1551,7 +1562,19 @@ export async function updateTask(
       summary: `Updated task ${task.title}.`,
       apply: (nextDocument) => {
         const nextTask = requireTask(nextDocument, taskId);
-        Object.assign(nextTask, patch, { alias: nextAlias });
+        const { acceptanceCriteria: rawAc, ...rest } = patch;
+        // Snapshot existing ids before any mutation so we can preserve them.
+        const existingIds = new Set(nextTask.acceptanceCriteria.map((c) => c.id));
+        Object.assign(nextTask, rest, { alias: nextAlias });
+        if (rawAc !== undefined) {
+          nextTask.acceptanceCriteria = rawAc.map((c) => {
+            if (c.id !== undefined) {
+              if (!existingIds.has(c.id)) throw new Error(`Acceptance criterion id "${c.id}" does not exist on task ${taskId}. Omit id for new items.`);
+              return { id: c.id, text: c.text, done: c.done };
+            }
+            return { id: createId("ac"), text: c.text, done: c.done };
+          });
+        }
         touchTaskLineage(nextDocument, nextTask, nowIso());
         return nextTask;
       }
@@ -1564,6 +1587,128 @@ export async function updateTask(
     void notifyMentions(repository, "task", taskId, `field:${taskId}`, "field", textFields, actor?.id).catch(() => {});
   }
   return task;
+}
+
+export async function checkAcceptanceCriterion(
+  repository: TaskboardRepository,
+  taskId: string,
+  criterionId: string,
+  done: boolean
+): Promise<Task> {
+  return mutateDocument(repository, (document) => {
+    const task = requireTask(document, taskId);
+    const criterion = task.acceptanceCriteria.find((c) => c.id === criterionId);
+    if (!criterion) throw new Error(`Acceptance criterion ${criterionId} not found on task ${taskId}.`);
+    return {
+      scopes: [nodeScope("task", taskId)],
+      summary: `Marked criterion "${criterion.text}" ${done ? "done" : "not done"} on task ${task.title}.`,
+      apply: (nextDocument) => {
+        const nextTask = requireTask(nextDocument, taskId);
+        const c = nextTask.acceptanceCriteria.find((c) => c.id === criterionId);
+        if (c) c.done = done;
+        touchTaskLineage(nextDocument, nextTask, nowIso());
+        return nextTask;
+      }
+    };
+  });
+}
+
+export async function addAcceptanceCriterion(
+  repository: TaskboardRepository,
+  taskId: string,
+  text: string,
+  done: boolean
+): Promise<AcceptanceCriterion> {
+  const criterion: AcceptanceCriterion = { id: createId("ac"), text, done };
+  await mutateDocument(repository, (document) => {
+    requireTask(document, taskId);
+    return {
+      scopes: [nodeScope("task", taskId)],
+      summary: `Added criterion "${text}" to task.`,
+      apply: (nextDocument) => {
+        const nextTask = requireTask(nextDocument, taskId);
+        nextTask.acceptanceCriteria.push(criterion);
+        touchTaskLineage(nextDocument, nextTask, nowIso());
+        return nextTask;
+      }
+    };
+  });
+  return criterion;
+}
+
+export async function updateAcceptanceCriterion(
+  repository: TaskboardRepository,
+  taskId: string,
+  criterionId: string,
+  text: string
+): Promise<Task> {
+  return mutateDocument(repository, (document) => {
+    const task = requireTask(document, taskId);
+    const criterion = task.acceptanceCriteria.find((c) => c.id === criterionId);
+    if (!criterion) throw new Error(`Acceptance criterion ${criterionId} not found on task ${taskId}.`);
+    return {
+      scopes: [nodeScope("task", taskId)],
+      summary: `Updated criterion text on task ${task.title}.`,
+      apply: (nextDocument) => {
+        const nextTask = requireTask(nextDocument, taskId);
+        const c = nextTask.acceptanceCriteria.find((c) => c.id === criterionId);
+        if (c) c.text = text;
+        touchTaskLineage(nextDocument, nextTask, nowIso());
+        return nextTask;
+      }
+    };
+  });
+}
+
+export async function deleteAcceptanceCriterion(
+  repository: TaskboardRepository,
+  taskId: string,
+  criterionId: string
+): Promise<Task> {
+  return mutateDocument(repository, (document) => {
+    const task = requireTask(document, taskId);
+    if (!task.acceptanceCriteria.find((c) => c.id === criterionId)) {
+      throw new Error(`Acceptance criterion ${criterionId} not found on task ${taskId}.`);
+    }
+    return {
+      scopes: [nodeScope("task", taskId)],
+      summary: `Deleted criterion from task ${task.title}.`,
+      apply: (nextDocument) => {
+        const nextTask = requireTask(nextDocument, taskId);
+        nextTask.acceptanceCriteria = nextTask.acceptanceCriteria.filter((c) => c.id !== criterionId);
+        touchTaskLineage(nextDocument, nextTask, nowIso());
+        return nextTask;
+      }
+    };
+  });
+}
+
+export async function reorderAcceptanceCriteria(
+  repository: TaskboardRepository,
+  taskId: string,
+  criterionIds: string[]
+): Promise<Task> {
+  return mutateDocument(repository, (document) => {
+    const task = requireTask(document, taskId);
+    const existingIds = new Set(task.acceptanceCriteria.map((c) => c.id));
+    for (const id of criterionIds) {
+      if (!existingIds.has(id)) throw new Error(`Acceptance criterion ${id} not found on task ${taskId}.`);
+    }
+    if (criterionIds.length !== task.acceptanceCriteria.length) {
+      throw new Error(`criterionIds must include all ${task.acceptanceCriteria.length} existing criteria — use delete_acceptance_criterion to remove items first.`);
+    }
+    return {
+      scopes: [nodeScope("task", taskId)],
+      summary: `Reordered acceptance criteria on task ${task.title}.`,
+      apply: (nextDocument) => {
+        const nextTask = requireTask(nextDocument, taskId);
+        const byId = new Map(nextTask.acceptanceCriteria.map((c) => [c.id, c]));
+        nextTask.acceptanceCriteria = criterionIds.map((id) => byId.get(id)!);
+        touchTaskLineage(nextDocument, nextTask, nowIso());
+        return nextTask;
+      }
+    };
+  });
 }
 
 // Resolve an attachment target (epic/feature/task) to a concrete entity that
