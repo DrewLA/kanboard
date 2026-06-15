@@ -133,7 +133,7 @@ Once the server is up and the MCP client is connected, retry `get_taskboard` to 
 
 ## How To Use The Board
 
-1. Call `get_taskboard` once at the start of a session or when you need a full-board audit.
+1. Call `get_agent_guide` once at session start if you need to (re)learn the board's rules and tools, then `get_taskboard` for a full-board audit.
 2. Read the BoardBrief to understand the shared objective, scope, success criteria, and current focus.
 3. For later lookups, prefer `resolve_node`, `find_nodes`, `list_features`, `list_user_stories`, and `list_tasks` instead of repeatedly calling `get_taskboard`.
 4. Check whether the work belongs to an existing epic, feature, story, or task before creating anything new.
@@ -148,6 +148,7 @@ Once the server is up and the MCP client is connected, retry `get_taskboard` to 
 
 Board and brief:
 
+- `get_agent_guide`: Return this operating guide (hierarchy rules, full tool reference, usage guidance, and error codes). Call once at session start to learn how to use the board.
 - `get_taskboard`: Return the full board snapshot, including the BoardBrief, hierarchy, and resolved feature/task links.
 - `get_board_brief`: Return the top-level BoardBrief only.
 - `list_epics`: List epics only.
@@ -206,7 +207,7 @@ Task tools:
 - `list_tasks`: List tasks, optionally scoped by `storyId` or `storyAlias`.
 - `get_task`: Read one task by `taskId`.
 - `create_task`: Create a task under a story. Required: `title` plus `storyId` or `storyAlias`. Optional: `alias`, `summary`, `status`, `priority`, `implementationNotes`, `estimate`, `tags`, `assignedTo`, `acceptanceCriteria` (array of `{ text, done? }` — no ids on create).
-- `update_task`: Update a task by `taskId`. Does not accept `acceptanceCriteria` — use the dedicated AC tools below.
+- `update_task`: Update a task by `taskId`. Accepts `acceptanceCriteria` as a full replace (array of `{ id?, text, done? }`): include an existing criterion's `id` to keep it, omit `id` to add a new one, and leave a criterion out to delete it. For incremental edits to a single criterion, prefer the dedicated AC tools below.
 - `add_acceptance_criterion`: Append one criterion. Required: `taskId`, `text`. Optional: `done`. Returns the new criterion including its id.
 - `update_acceptance_criterion`: Edit one criterion's text. Required: `taskId`, `criterionId`, `text`.
 - `check_acceptance_criterion`: Toggle done state. Required: `taskId`, `criterionId`, `done`.
@@ -252,7 +253,7 @@ Acceptance criteria live on tasks. `get_task` returns them as `{ id, text, done 
 - `update_acceptance_criterion` — edit one item's text. One call.
 - `delete_acceptance_criterion` — remove one item. One call.
 - `reorder_acceptance_criteria` — change order. Pass all existing ids in the desired order; delete first if shrinking.
-- Do not call `update_task` to manipulate acceptance criteria — use the dedicated tools above.
+- `update_task` with `acceptanceCriteria` replaces the whole list in one call: include an existing criterion's `id` to keep it, omit `id` to add one, leave a criterion out to delete it. Use the per-criterion tools above to change a single item without resending the list.
 - Do not duplicate criteria text in the task summary or implementation notes.
 
 ## Attachment Usage Guidance

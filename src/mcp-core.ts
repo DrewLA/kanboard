@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
+
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { ZodError } from "zod";
@@ -77,6 +80,11 @@ import {
 } from "./taskboard-service";
 
 export const toolDefinitions = [
+  {
+    name: "get_agent_guide",
+    description: "Return the full operating guide for this taskboard (hierarchy rules, tool reference, acceptance-criteria and link/comment guidance, error codes). Call this once at the start of a session to learn how to use the board correctly.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false }
+  },
   {
     name: "get_taskboard",
     description: "Return the full agile taskboard snapshot with the board brief, hierarchy, and links.",
@@ -444,6 +452,20 @@ export const toolDefinitions = [
         priority: { type: "string" },
         implementationNotes: { type: "string" },
         estimate: { type: "string" },
+        acceptanceCriteria: {
+          type: "array",
+          description: "Replaces the task's acceptance criteria. Include the id of an existing criterion to keep it (omit id to add a new one); criteria not listed are removed. For incremental edits, prefer add/update/check/delete_acceptance_criterion.",
+          items: {
+            type: "object",
+            required: ["text"],
+            properties: {
+              id: { type: "string", description: "Id of an existing criterion to preserve. Omit for new criteria." },
+              text: { type: "string", description: "The criterion text." },
+              done: { type: "boolean", description: "Whether this criterion is met. Defaults to false." }
+            },
+            additionalProperties: false
+          }
+        },
         tags: { type: "array", items: { type: "string" } },
         assignedTo: { type: "string" }
       },
@@ -636,6 +658,25 @@ function toText(result: unknown) {
   };
 }
 
+// Return text verbatim instead of JSON-encoding it — used for the markdown
+// agent guide, which the agent reads directly.
+function toRawText(text: string) {
+  return { content: [{ type: "text", text }] };
+}
+
+// docs/ sits alongside src/ and dist/ at the repo root, so resolve relative to
+// this module rather than process.cwd() so the tool works regardless of where
+// the server was launched from (tsx src/ in dev, node dist/ in prod).
+const agentGuidePath = path.join(__dirname, "..", "docs", "agent-skill-prompt.md");
+
+function loadAgentGuide(): string {
+  try {
+    return readFileSync(agentGuidePath, "utf8");
+  } catch {
+    return "The agent guide could not be read on this server. Inspect the board with get_taskboard and follow the hierarchy epic -> feature -> user story -> task.";
+  }
+}
+
 function toToolError(error: unknown) {
   if (error instanceof RepositoryAccessError) {
     return {
@@ -774,6 +815,8 @@ export function buildMcpServer(repository: TaskboardRepository, config: AppConfi
       const args = request.params.arguments ?? {};
 
       switch (request.params.name) {
+        case "get_agent_guide":
+          return toRawText(loadAgentGuide());
         case "get_taskboard":
           return toText(await getTaskboard(repository));
         case "get_board_brief":
