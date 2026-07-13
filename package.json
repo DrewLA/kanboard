@@ -20,7 +20,9 @@
     "upgrade": "tsx src/scripts/upgrade.ts",
     "typecheck": "tsc --noEmit",
     "migrate:up": "tsx src/scripts/migrate.ts up",
-    "migrate:down": "tsx src/scripts/migrate.ts down"
+    "migrate:down": "tsx src/scripts/migrate.ts down",
+    "migrate:hash": "tsx src/scripts/migrate-hash.ts",
+    "backup": "tsx src/scripts/backup.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1057.0",

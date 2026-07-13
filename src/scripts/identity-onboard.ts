@@ -8,7 +8,7 @@ import { getAddress } from "ethers";
 import { getAppConfig } from "../config";
 import { deriveAddress, signMutationEnvelope } from "../identity";
 import { createEmptyTaskboardDocument, nowIso } from "../model";
-import { StateTable, UserRecord, statePackageFromDocument, tableNames } from "../state-package";
+import { StateTable, UserRecord, VersionedRecord, encodeRowsToHashFields, encodeTableMeta, statePackageFromDocument, tableFromHashFields, tableNames } from "../state-package";
 import { createEncryptedIdentity, decryptPrivateKey, fileExists, promptHidden, promptLine, readIdentityFile, writeIdentityFile } from "../identity-store";
 
 const AVATAR_COLORS = [
@@ -49,11 +49,13 @@ async function pingRedis(dbString: string): Promise<Redis> {
 
 async function upsertUserInDb(redis: Redis, dbString: string, user: UserRecord): Promise<void> {
   const parsed = parseDbString(dbString);
-  const tableKey = (name: string) => `${parsed.prefix}:table:${name}`;
-  const raw = await redis.get<string | null>(tableKey("users"));
-  const usersTable: StateTable<UserRecord> = raw
-    ? JSON.parse(raw) as StateTable<UserRecord>
-    : { schemaVersion: 1, version: 0, updatedAt: nowIso(), rows: {} };
+  const rowsKey = `${parsed.prefix}:table:users`;
+  const metaKey = `${parsed.prefix}:meta:users`;
+  const [fields, metaRaw] = await Promise.all([
+    redis.hgetall<Record<string, string>>(rowsKey),
+    redis.get<string | null>(metaKey)
+  ]);
+  const usersTable = tableFromHashFields(fields, metaRaw ?? undefined) as StateTable<UserRecord>;
 
   usersTable.rows[user.id] = {
     version: (usersTable.rows[user.id]?.version ?? 0) + 1,
@@ -61,16 +63,24 @@ async function upsertUserInDb(redis: Redis, dbString: string, user: UserRecord):
   };
   usersTable.version += 1;
   usersTable.updatedAt = nowIso();
-  await redis.set(tableKey("users"), JSON.stringify(usersTable));
+
+  await redis.hset(rowsKey, encodeRowsToHashFields(usersTable));
+  await redis.set(metaKey, encodeTableMeta(usersTable));
 }
 
 async function initializeTeamPackageInDb(redis: Redis, dbString: string): Promise<void> {
   const parsed = parseDbString(dbString);
-  const tableKey = (name: string) => `${parsed.prefix}:table:${name}`;
   const statePackage = statePackageFromDocument(createEmptyTaskboardDocument());
 
   for (const tableName of tableNames) {
-    await redis.set(tableKey(tableName), JSON.stringify(statePackage.tables[tableName]));
+    const table = statePackage.tables[tableName];
+    const rowsKey = `${parsed.prefix}:table:${tableName}`;
+    const fields = encodeRowsToHashFields(table);
+    await redis.del(rowsKey);
+    if (Object.keys(fields).length > 0) {
+      await redis.hset(rowsKey, fields);
+    }
+    await redis.set(`${parsed.prefix}:meta:${tableName}`, encodeTableMeta(table));
   }
 }
 
@@ -107,9 +117,8 @@ async function promptConfirmDefaultYes(question: string): Promise<boolean> {
 
 async function checkUsersTableExists(redis: Redis, dbString: string): Promise<boolean> {
   const parsed = parseDbString(dbString);
-  const tableKey = (name: string) => `${parsed.prefix}:table:${name}`;
-  const raw = await redis.get<string | null>(tableKey("users"));
-  return raw !== null;
+  const exists = await redis.exists(`${parsed.prefix}:table:users`);
+  return exists > 0;
 }
 
 async function writeLocalUserFile(userFile: string, userRecord: UserRecord): Promise<void> {
@@ -168,13 +177,12 @@ async function registerUserInTeamDb(options: {
   }
 
   const parsed = parseDbString(options.dbString);
-  const tableKey = (name: string) => `${parsed.prefix}:table:${name}`;
-  const usersRaw = await options.redis.get<string | null>(tableKey("users"));
-  const usersTable = usersRaw ? JSON.parse(usersRaw) as StateTable<UserRecord> : null;
-  const currentUserVersion = usersTable?.rows?.[options.userRecord.id]?.version ?? 0;
-  const metadataRaw = await options.redis.get<string | null>(tableKey("metadata"));
-  const metadataTable = metadataRaw ? JSON.parse(metadataRaw) as StateTable<{ projectId?: string }> : null;
-  const projectId = metadataTable?.rows?.project?.value?.projectId ?? "project";
+  const userRowRaw = await options.redis.hget<string | null>(`${parsed.prefix}:table:users`, options.userRecord.id);
+  const currentUserVersion = userRowRaw ? (JSON.parse(userRowRaw) as VersionedRecord<UserRecord>).version : 0;
+  const metadataRowRaw = await options.redis.hget<string | null>(`${parsed.prefix}:table:metadata`, "project");
+  const projectId = metadataRowRaw
+    ? ((JSON.parse(metadataRowRaw) as VersionedRecord<{ projectId?: string }>).value?.projectId ?? "project")
+    : "project";
   const signature = await signMutationEnvelope(options.privateKey, projectId, {
     nonce: randomUUID(),
     issuedAt: nowIso(),

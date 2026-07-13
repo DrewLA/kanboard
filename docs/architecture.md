@@ -78,26 +78,24 @@ Criterion ids are stable for the lifetime of the item. The MCP layer exposes ded
 
 ## Persistence model
 
-The board persists as one JSON document behind a repository interface.
+The in-memory board is a nested document (epic → feature → story → task, plus comments and links). For storage it is flattened into a **state package**: one table per record type (`epics`, `features`, `tasks`, `comments`, `notifications`, …), each a keyed map of `{ version, value }` rows. The nested document is rebuilt from these tables on load. Each record's `value` stays full nested JSON — the flattening is only at the table level, not inside records.
 
-Supported backends:
+Supported backends (behind one repository interface):
 
-- Upstash Redis at a single key
-- local file storage at a single JSON file path
+- **Upstash Redis** — each table is a Redis **hash** at `<prefix>:table:<name>`, one field per row (`id -> {version,value}` JSON), with the table's `version`/`updatedAt` in a sibling string key `<prefix>:meta:<name>`. Meta lives in its own key so no row id can collide with a reserved hash field.
+- **Local file** — one JSON file per table under the state dir.
 
-Why this is the right tradeoff here:
+Concurrency control is per-row optimistic locking. A mutation loads the current package, diffs it against the edited document to get the exact rows that changed, and commits with a compare-and-set: on Upstash a single Lua script `HGET`s each touched row to verify its `version`, then `HSET`/`HDEL`s only the changed rows and updates the affected tables' meta. Reads and writes therefore cost O(changed rows), not O(whole table) — earlier the commit script decoded the entire table blob, which tripped Upstash's script execution-time limit as boards grew.
 
-- the board is private and local-only
-- usage is expected to be low-to-moderate concurrency across a small number of cooperating agents
-- the hierarchy is small and naturally document-shaped
-- backup and migration stay straightforward
+Writes are also serialized inside the runtime — the browser UI, REST API, and localhost MCP callers all hit the same process — so the compare-and-set mainly guards against multiple processes/agents sharing one Upstash in team mode.
 
-Writes are serialized inside the runtime.
+### Migrating existing Upstash data
 
-- the browser UI, REST API callers, and localhost MCP callers all hit the same process
-- each mutation loads the current document, applies the change, increments revision, and saves
+Boards created before the hash layout stored each table as a single JSON string blob at `<prefix>:table:<name>`. Convert them once, as the board admin, before restarting on the current build:
 
-If this ever grows into a higher-write or heavily collaborative tool, the next step would be splitting entities into separate keys with stronger per-entity concurrency controls.
+1. `npm run backup` — snapshot every table from Upstash into `.backup/<timestamp>/` (format-agnostic; safe before or after migration).
+2. `npm run migrate:hash` — convert each string blob into a hash + meta key. Idempotent (skips tables already migrated) and crash-safe (builds the new hash at a temp key, then atomic `RENAME`).
+3. Restart the server.
 
 ## Service layer
 

@@ -161,7 +161,7 @@ function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
-function normalizeTable<T>(value: unknown): StateTable<T> {
+export function normalizeTable<T>(value: unknown): StateTable<T> {
   const fallback = createEmptyTable<T>();
 
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -204,6 +204,76 @@ export function normalizeStatePackage(value: unknown): StatePackage {
       recycleBin: normalizeTable<RecycleBinEntry>(source.tables?.recycleBin ?? empty.tables.recycleBin)
     }
   };
+}
+
+// --- Redis hash storage encoding ---------------------------------------------
+// A table is stored as a Redis hash of rows (field id -> VersionedRecord JSON)
+// plus a small sibling meta key holding the table's version/updatedAt. Keeping
+// meta in a separate key means no row id can ever collide with a reserved field.
+
+export function encodeRowsToHashFields(table: StateTable<unknown>): Record<string, string> {
+  const fields: Record<string, string> = {};
+
+  for (const [id, row] of Object.entries(table.rows)) {
+    fields[id] = JSON.stringify(row);
+  }
+
+  return fields;
+}
+
+export function encodeTableMeta(table: StateTable<unknown>): string {
+  return JSON.stringify({
+    schemaVersion: 1,
+    version: table.version,
+    updatedAt: table.updatedAt
+  });
+}
+
+// Normalizes whatever an HGETALL returns into [id, rawRow] pairs. With the
+// Upstash client's automaticDeserialization disabled, HGETALL comes back as a
+// flat [field, value, field, value, ...] array of raw JSON strings; other
+// configs return an object. Handle both, and values that are either raw JSON
+// strings or already-parsed objects.
+function hashEntries(fields: unknown): [string, unknown][] {
+  if (Array.isArray(fields)) {
+    const entries: [string, unknown][] = [];
+    for (let i = 0; i + 1 < fields.length; i += 2) {
+      entries.push([String(fields[i]), fields[i + 1]]);
+    }
+    return entries;
+  }
+
+  if (fields && typeof fields === "object") {
+    return Object.entries(fields as Record<string, unknown>);
+  }
+
+  return [];
+}
+
+export function tableFromHashFields(
+  fields: unknown,
+  metaRaw: string | null | undefined
+): StateTable<unknown> {
+  const rows: Record<string, VersionedRecord<unknown>> = {};
+
+  for (const [id, raw] of hashEntries(fields)) {
+    rows[id] = (typeof raw === "string" ? JSON.parse(raw) : raw) as VersionedRecord<unknown>;
+  }
+
+  let version = 0;
+  let updatedAt = nowIso();
+
+  if (metaRaw) {
+    const meta = JSON.parse(metaRaw) as { version?: unknown; updatedAt?: unknown };
+    if (typeof meta.version === "number" && Number.isInteger(meta.version) && meta.version >= 0) {
+      version = meta.version;
+    }
+    if (typeof meta.updatedAt === "string" && meta.updatedAt) {
+      updatedAt = meta.updatedAt;
+    }
+  }
+
+  return { schemaVersion: 1, version, updatedAt, rows };
 }
 
 function stripComments<T extends { comments: NodeComment[] }>(entity: T): T {

@@ -19,10 +19,13 @@ import {
   cloneStatePackage,
   createEmptyStatePackage,
   diffDocuments,
+  encodeRowsToHashFields,
+  encodeTableMeta,
   getRecordVersion,
   normalizeStatePackage,
   statePackageFromDocument,
   statePackageToDocument,
+  tableFromHashFields,
   tableNames,
   uniqueRecordRefs
 } from "./state-package";
@@ -192,10 +195,23 @@ interface LoadedDocumentState {
   statePackage: StatePackage;
 }
 
+// A single row touched by a commit: an upsert (value read from nextPackage) or a
+// deletion. The adapter writes only these rows plus the meta of the tables they
+// belong to, never the whole table.
+export interface RowChange {
+  table: TableName;
+  id: string;
+  deleted?: boolean;
+}
+
 interface StateStorageAdapter {
   loadPackage(): Promise<StatePackage>;
-  commitPackage(nextPackage: StatePackage, conditions: RecordVersionRef[], changedTables: Set<TableName>): Promise<void>;
+  commitPackage(nextPackage: StatePackage, conditions: RecordVersionRef[], rowChanges: RowChange[]): Promise<void>;
   replacePackage(nextPackage: StatePackage): Promise<void>;
+}
+
+function changedTablesFromRowChanges(rowChanges: RowChange[]): Set<TableName> {
+  return new Set(rowChanges.map((change) => change.table));
 }
 
 function isStatePackageEmpty(statePackage: StatePackage): boolean {
@@ -227,11 +243,13 @@ class LocalStatePackageAdapter implements StateStorageAdapter {
     return nextPackage;
   }
 
-  async commitPackage(nextPackage: StatePackage, conditions: RecordVersionRef[], changedTables: Set<TableName>): Promise<void> {
+  async commitPackage(nextPackage: StatePackage, conditions: RecordVersionRef[], rowChanges: RowChange[]): Promise<void> {
     await this.withPackageLock(async () => {
       const currentPackage = await this.loadPackage();
       assertRecordVersions(currentPackage, conditions, "commit local state package");
-      await this.writePackageTables(nextPackage, changedTables);
+      // Local disk has no per-row size or script-time limit, so keep writing whole
+      // table files; just derive which tables changed from the row-level changes.
+      await this.writePackageTables(nextPackage, changedTablesFromRowChanges(rowChanges));
     });
   }
 
@@ -285,7 +303,7 @@ interface ParsedUpstashDbString {
   prefix: string;
 }
 
-function parseDbString(dbString: string): ParsedUpstashDbString {
+export function parseDbString(dbString: string): ParsedUpstashDbString {
   const [scheme, ...parts] = dbString.split(";");
 
   if (scheme !== "upstash") {
@@ -312,20 +330,24 @@ class UpstashStatePackageAdapter implements StateStorageAdapter {
   private readonly redis: Redis;
   private readonly prefix: string;
 
+  // Each table is a Redis hash of rows (field id -> VersionedRecord JSON). The
+  // commit script reads only the individual rows it needs to version-check and
+  // writes only the rows that changed, so cost is O(changed rows) instead of
+  // O(whole table) — which is what tripped Upstash's Lua execution-time limit.
+  //
+  // KEYS are laid out two-per-table: [rowsKey, metaKey, rowsKey, metaKey, ...].
+  // ARGV: [1]=conditions, [2]=row writes, [3]=table meta writes.
   private readonly commitScript = `
 local conditions = cjson.decode(ARGV[1])
-local changedTables = cjson.decode(ARGV[2])
+local writes = cjson.decode(ARGV[2])
+local metas = cjson.decode(ARGV[3])
 
 for _, condition in ipairs(conditions) do
-  local tableValue = redis.call("GET", KEYS[condition.keyIndex])
+  local rowJson = redis.call("HGET", KEYS[condition.keyIndex], condition.id)
   local currentVersion = 0
 
-  if tableValue then
-    local tableDocument = cjson.decode(tableValue)
-    local row = tableDocument.rows[condition.id]
-    if row then
-      currentVersion = tonumber(row.version) or 0
-    end
+  if rowJson then
+    currentVersion = tonumber(cjson.decode(rowJson).version) or 0
   end
 
   if currentVersion ~= tonumber(condition.version) then
@@ -339,8 +361,16 @@ for _, condition in ipairs(conditions) do
   end
 end
 
-for index, tableChange in ipairs(changedTables) do
-  redis.call("SET", KEYS[tableChange.keyIndex], ARGV[index + 2])
+for _, write in ipairs(writes) do
+  if write.deleted then
+    redis.call("HDEL", KEYS[write.keyIndex], write.id)
+  else
+    redis.call("HSET", KEYS[write.keyIndex], write.id, write.value)
+  end
+end
+
+for _, meta in ipairs(metas) do
+  redis.call("SET", KEYS[meta.keyIndex], meta.value)
 end
 
 return cjson.encode({ ok = true })
@@ -360,31 +390,55 @@ return cjson.encode({ ok = true })
     const nextPackage = createEmptyStatePackage();
 
     await Promise.all(tableNames.map(async (tableName) => {
-      const raw = await this.redis.get<string | null>(this.tableKey(tableName));
+      const [fields, metaRaw] = await Promise.all([
+        this.redis.hgetall(this.tableKey(tableName)),
+        this.redis.get<string | null>(this.metaKey(tableName))
+      ]);
 
-      if (raw === null || raw === undefined) return;
-
+      const table = tableFromHashFields(fields, metaRaw ?? undefined);
       nextPackage.tables[tableName] = normalizeStatePackage({
-        tables: { [tableName]: typeof raw === "string" ? JSON.parse(raw) : raw }
+        tables: { [tableName]: table }
       }).tables[tableName] as never;
     }));
 
     return nextPackage;
   }
 
-  async commitPackage(nextPackage: StatePackage, conditions: RecordVersionRef[], changedTables: Set<TableName>): Promise<void> {
-    const changedTableList = [...changedTables];
-    const keyTableList = [...new Set([...changedTableList, ...conditions.map((condition) => condition.table)])];
-    const keys = keyTableList.map((tableName) => this.tableKey(tableName));
-    const keyIndexes = new Map(keyTableList.map((tableName, index) => [tableName, index + 1]));
-    const serializedConditions = conditions.map((condition) => ({
-      ...condition,
-      keyIndex: keyIndexes.get(condition.table)
-    })).filter((condition): condition is RecordVersionRef & { keyIndex: number } => typeof condition.keyIndex === "number");
+  async commitPackage(nextPackage: StatePackage, conditions: RecordVersionRef[], rowChanges: RowChange[]): Promise<void> {
+    const changedTables = [...changedTablesFromRowChanges(rowChanges)];
+    const keyTableList = [...new Set([...changedTables, ...conditions.map((condition) => condition.table)])];
+
+    const keys: string[] = [];
+    const rowKeyIndex = new Map<TableName, number>();
+    const metaKeyIndex = new Map<TableName, number>();
+    for (const tableName of keyTableList) {
+      keys.push(this.tableKey(tableName));
+      rowKeyIndex.set(tableName, keys.length);
+      keys.push(this.metaKey(tableName));
+      metaKeyIndex.set(tableName, keys.length);
+    }
+
+    const serializedConditions = conditions
+      .map((condition) => ({ ...condition, keyIndex: rowKeyIndex.get(condition.table) }))
+      .filter((condition): condition is RecordVersionRef & { keyIndex: number } => typeof condition.keyIndex === "number");
+
+    const writes = rowChanges.map((change) => {
+      const keyIndex = rowKeyIndex.get(change.table) as number;
+      if (change.deleted) {
+        return { keyIndex, id: change.id, deleted: true };
+      }
+      return { keyIndex, id: change.id, value: JSON.stringify(nextPackage.tables[change.table].rows[change.id]) };
+    });
+
+    const metas = changedTables.map((tableName) => ({
+      keyIndex: metaKeyIndex.get(tableName) as number,
+      value: encodeTableMeta(nextPackage.tables[tableName])
+    }));
+
     const args = [
       JSON.stringify(serializedConditions),
-      JSON.stringify(changedTableList.map((tableName) => ({ table: tableName, keyIndex: keyIndexes.get(tableName) }))),
-      ...changedTableList.map((tableName) => JSON.stringify(nextPackage.tables[tableName]))
+      JSON.stringify(writes),
+      JSON.stringify(metas)
     ];
     const result = await this.redis.eval<string[], unknown>(this.commitScript, keys, args);
     const payload = parseCompareAndSetResult(result);
@@ -396,12 +450,26 @@ return cjson.encode({ ok = true })
 
   async replacePackage(nextPackage: StatePackage): Promise<void> {
     for (const tableName of tableNames) {
-      await this.redis.set(this.tableKey(tableName), JSON.stringify(nextPackage.tables[tableName]));
+      const table = nextPackage.tables[tableName];
+      const fields = encodeRowsToHashFields(table);
+      const pipeline = this.redis.pipeline();
+      // Drop whatever is at the key first so a legacy string blob or stale rows
+      // are fully replaced by the fresh hash.
+      pipeline.del(this.tableKey(tableName));
+      if (Object.keys(fields).length > 0) {
+        pipeline.hset(this.tableKey(tableName), fields);
+      }
+      pipeline.set(this.metaKey(tableName), encodeTableMeta(table));
+      await pipeline.exec();
     }
   }
 
   private tableKey(tableName: TableName): string {
     return `${this.prefix}:table:${tableName}`;
+  }
+
+  private metaKey(tableName: TableName): string {
+    return `${this.prefix}:meta:${tableName}`;
   }
 }
 
@@ -550,9 +618,14 @@ class ModularTaskboardRepository implements TaskboardRepository {
 
     const mutation = await this.buildMutation(latestPackage, conditions, saveOptions.summary ?? saveOptions.operation ?? "Kanboard mutation.");
     const nextPackage = applyPackageChanges(latestPackage, diff, mutation);
-    const changedTables = new Set<TableName>([...diff.changedTables, "metadata"]);
+    // applyPackageChanges always bumps the metadata "project" row, so include it
+    // alongside the document's row-level changes.
+    const rowChanges: RowChange[] = [
+      ...diff.changes.map((change) => ({ table: change.table, id: change.id, deleted: change.deleted })),
+      { table: "metadata", id: "project" }
+    ];
 
-    await this.primary.commitPackage(nextPackage, conditions, changedTables);
+    await this.primary.commitPackage(nextPackage, conditions, rowChanges);
     await this.options.localMirror?.replacePackage(nextPackage);
     this.options.onChanged?.();
 
@@ -605,7 +678,7 @@ class ModularTaskboardRepository implements TaskboardRepository {
       next.tables.notifications.version += 1;
     }
     next.tables.notifications.updatedAt = timestamp;
-    await this.primary.commitPackage(next, [], new Set(["notifications"]));
+    await this.primary.commitPackage(next, [], notifications.map((n) => ({ table: "notifications", id: n.id })));
   }
 
   async deleteNotificationsBySource(sourceId: string): Promise<void> {
@@ -618,7 +691,7 @@ class ModularTaskboardRepository implements TaskboardRepository {
     for (const id of ids) delete next.tables.notifications.rows[id];
     next.tables.notifications.version += 1;
     next.tables.notifications.updatedAt = nowIso();
-    await this.primary.commitPackage(next, [], new Set(["notifications"]));
+    await this.primary.commitPackage(next, [], ids.map((id) => ({ table: "notifications", id, deleted: true })));
   }
 
   async deleteNodeNotifications(nodeId: string): Promise<void> {
@@ -631,7 +704,7 @@ class ModularTaskboardRepository implements TaskboardRepository {
     for (const id of ids) delete next.tables.notifications.rows[id];
     next.tables.notifications.version += 1;
     next.tables.notifications.updatedAt = nowIso();
-    await this.primary.commitPackage(next, [], new Set(["notifications"]));
+    await this.primary.commitPackage(next, [], ids.map((id) => ({ table: "notifications", id, deleted: true })));
   }
 
   async readNodeNotifications(userId: string, nodeId: string, sourceType?: NotificationSourceType): Promise<void> {
@@ -648,7 +721,7 @@ class ModularTaskboardRepository implements TaskboardRepository {
     for (const id of ids) delete next.tables.notifications.rows[id];
     next.tables.notifications.version += 1;
     next.tables.notifications.updatedAt = nowIso();
-    await this.primary.commitPackage(next, [], new Set(["notifications"]));
+    await this.primary.commitPackage(next, [], ids.map((id) => ({ table: "notifications", id, deleted: true })));
   }
 
   async listRecycleBin(): Promise<RecycleBinEntry[]> {
@@ -668,34 +741,35 @@ class ModularTaskboardRepository implements TaskboardRepository {
       next.tables.recycleBin.version += 1;
     }
     next.tables.recycleBin.updatedAt = timestamp;
-    await this.primary.commitPackage(next, [], new Set(["recycleBin"]));
+    await this.primary.commitPackage(next, [], entries.map((entry) => ({ table: "recycleBin", id: entry.id })));
   }
 
   async removeFromRecycleBin(entryIds: string[]): Promise<void> {
     if (!entryIds.length) return;
     const pkg = await this.primary.loadPackage();
     const next = cloneStatePackage(pkg);
-    let touched = false;
+    const removed: string[] = [];
     for (const id of entryIds) {
       if (next.tables.recycleBin.rows[id]) {
         delete next.tables.recycleBin.rows[id];
-        touched = true;
+        removed.push(id);
       }
     }
-    if (!touched) return;
+    if (!removed.length) return;
     next.tables.recycleBin.version += 1;
     next.tables.recycleBin.updatedAt = nowIso();
-    await this.primary.commitPackage(next, [], new Set(["recycleBin"]));
+    await this.primary.commitPackage(next, [], removed.map((id) => ({ table: "recycleBin", id, deleted: true })));
   }
 
   async emptyRecycleBin(): Promise<void> {
     const pkg = await this.primary.loadPackage();
-    if (!Object.keys(pkg.tables.recycleBin.rows).length) return;
+    const ids = Object.keys(pkg.tables.recycleBin.rows);
+    if (!ids.length) return;
     const next = cloneStatePackage(pkg);
     next.tables.recycleBin.rows = {};
     next.tables.recycleBin.version += 1;
     next.tables.recycleBin.updatedAt = nowIso();
-    await this.primary.commitPackage(next, [], new Set(["recycleBin"]));
+    await this.primary.commitPackage(next, [], ids.map((id) => ({ table: "recycleBin", id, deleted: true })));
   }
 
   async getIdentityStatus(): Promise<IdentityStatus> {
