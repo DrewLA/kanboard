@@ -156,8 +156,6 @@ Board and brief:
 - `resolve_node`: Resolve a compact node summary by `type` and `id` or `alias`.
 - `find_nodes`: Search nodes by alias or title and return compact matches.
 - `update_board_brief`: Update `productName`, `objective`, `scopeDefinition`, `nonGoals`, `successCriteria`, `currentFocus`, or `implementationNotes`.
-- `get_metadata`: Compatibility alias for `get_board_brief`.
-- `update_metadata`: Compatibility alias for `update_board_brief`.
 
 ## What BoardBrief Is
 

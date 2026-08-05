@@ -8,7 +8,6 @@ export const workLinkKindValues = ["blocks", "relates-to"] as const;
 export const boardNodeTypeValues = ["epic", "feature", "story", "task"] as const;
 export const commentKindValues = ["note", "requirement", "blocker"] as const;
 export const taskAttachmentKindValues = ["image", "file", "mockup"] as const;
-export const taskAttachmentUploadKindValues = taskAttachmentKindValues;
 
 export type WorkStatus = (typeof workStatusValues)[number];
 export type Priority = (typeof priorityValues)[number];
@@ -26,7 +25,6 @@ const workLinkKindSchema = z.enum(workLinkKindValues);
 const boardNodeTypeSchema = z.enum(boardNodeTypeValues);
 const commentKindSchema = z.enum(commentKindValues);
 const taskAttachmentKindSchema = z.enum(taskAttachmentKindValues);
-const taskAttachmentUploadKindSchema = z.enum(taskAttachmentUploadKindValues);
 const aliasInputSchema = z.string().min(1).max(80);
 
 const baseCreateSchema = z.object({
@@ -68,8 +66,6 @@ export const boardBriefPatchSchema = z.object({
   ...value,
   objective: objective ?? productDescription
 }));
-
-export const metadataPatchSchema = boardBriefPatchSchema;
 
 export const createEpicInputSchema = baseCreateSchema.extend({
   attachments: z.array(taskAttachmentSchema).default([])
@@ -202,14 +198,13 @@ function validateAttachmentFileShape(
 }
 
 export const createAttachmentUploadInputSchema = z.object({
-  kind: taskAttachmentUploadKindSchema,
+  kind: taskAttachmentKindSchema,
   fileName: z.string().min(1).max(240),
   contentType: z.string().min(1).max(200),
   size: z.coerce.number().int().nonnegative().optional(),
   relativePath: z.string().min(1).max(1000).optional(),
   attachmentId: z.string().min(1).max(120).optional()
 }).superRefine(validateAttachmentFileShape);
-export const createTaskUploadInputSchema = createAttachmentUploadInputSchema;
 
 // Agents can attach mockups and images (not arbitrary files) to any epic,
 // feature, or task. Unlike the browser flow they send bytes inline rather than

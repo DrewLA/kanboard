@@ -1,6 +1,6 @@
 SHELL := /bin/zsh
 
-.PHONY: install build dev dev-watch start local mcp mcp-local check upgrade identity-onboard identity-whoami migrate-up migrate-down
+.PHONY: install build dev dev-watch start local mcp mcp-local check upgrade identity-onboard identity-whoami
 
 install:
 	npm install
@@ -38,9 +38,3 @@ identity-onboard:
 
 identity-whoami:
 	npm run identity:whoami
-
-migrate-up:
-	npx tsx src/scripts/migrate.ts up
-
-migrate-down:
-	npx tsx src/scripts/migrate.ts down

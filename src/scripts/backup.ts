@@ -19,12 +19,12 @@ import path from "node:path";
 
 import { Redis } from "@upstash/redis";
 
-import { getAppConfig } from "../config";
+import { loadAppConfig } from "../config";
 import { parseDbString } from "../repository";
 import { normalizeTable, tableFromHashFields, tableNames } from "../state-package";
 
 async function run(): Promise<void> {
-  const config = getAppConfig();
+  const config = loadAppConfig();
 
   if (!config.dbString) {
     console.error("No TASKBOARD_DB_STRING configured. This backup only applies to Upstash (team) boards.");

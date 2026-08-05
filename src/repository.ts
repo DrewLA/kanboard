@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { Redis } from "@upstash/redis";
 
-import { AppConfig, assertRedisConfig } from "./config";
+import { AppConfig } from "./config";
 import { deriveAddress, signMutationEnvelope, verifyMutationEnvelope } from "./identity";
 import { decryptPrivateKey, fileExists, readIdentityFile } from "./identity-store";
 import { BoardNodeType, Notification, NotificationSourceType, RecycleBinEntry, WorkItemType, createEmptyTaskboardDocument, normalizeTaskboardDocument, TaskboardDocument, nowIso } from "./model";
@@ -49,13 +49,6 @@ export class RepositoryConflictError extends Error {
     this.expectedRevision = expectedRevision;
     this.operation = operation;
     this.conflicts = conflicts;
-  }
-}
-
-export class RepositoryDataError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "RepositoryDataError";
   }
 }
 
@@ -104,6 +97,7 @@ export interface IdentityStatus {
 export interface TaskboardRepository {
   load(options?: LoadTaskboardOptions): Promise<TaskboardDocument>;
   save(document: TaskboardDocument, expectedRevision: number, options?: SaveTaskboardOptions): Promise<TaskboardDocument>;
+  getRevision?(): Promise<number>;
   listUsers?(): Promise<UserRecord[]>;
   getCurrentUser?(): Promise<UserRecord | null>;
   getIdentityStatus?(): Promise<IdentityStatus>;
@@ -176,20 +170,6 @@ function parseCompareAndSetResult(result: unknown): { ok: boolean; currentRevisi
   };
 }
 
-function parseStoredDocumentJson(value: string, source: string, recovery: string): TaskboardDocument {
-  try {
-    return normalizeTaskboardDocument(JSON.parse(value));
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-
-    throw new RepositoryDataError(
-      `${source} exists but does not contain valid kanboard JSON. ` +
-      "The server will not overwrite it automatically. " +
-      `${recovery} JSON parse error: ${detail}.`
-    );
-  }
-}
-
 interface LoadedDocumentState {
   document: TaskboardDocument;
   statePackage: StatePackage;
@@ -206,6 +186,7 @@ export interface RowChange {
 
 interface StateStorageAdapter {
   loadPackage(): Promise<StatePackage>;
+  getVersionToken(statePackage?: StatePackage): Promise<string>;
   commitPackage(nextPackage: StatePackage, conditions: RecordVersionRef[], rowChanges: RowChange[]): Promise<void>;
   replacePackage(nextPackage: StatePackage): Promise<void>;
 }
@@ -241,6 +222,22 @@ class LocalStatePackageAdapter implements StateStorageAdapter {
     }));
 
     return nextPackage;
+  }
+
+  async getVersionToken(): Promise<string> {
+    const versions = await Promise.all(tableNames.map(async (tableName) => {
+      try {
+        const info = await stat(path.join(this.directory, tableFileName(tableName)));
+        return `${tableName}:${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          return `${tableName}:missing`;
+        }
+        throw error;
+      }
+    }));
+
+    return versions.join("|");
   }
 
   async commitPackage(nextPackage: StatePackage, conditions: RecordVersionRef[], rowChanges: RowChange[]): Promise<void> {
@@ -388,20 +385,39 @@ return cjson.encode({ ok = true })
 
   async loadPackage(): Promise<StatePackage> {
     const nextPackage = createEmptyStatePackage();
+    const pipeline = this.redis.pipeline();
 
-    await Promise.all(tableNames.map(async (tableName) => {
-      const [fields, metaRaw] = await Promise.all([
-        this.redis.hgetall(this.tableKey(tableName)),
-        this.redis.get<string | null>(this.metaKey(tableName))
-      ]);
+    for (const tableName of tableNames) {
+      pipeline.hgetall(this.tableKey(tableName));
+      pipeline.get(this.metaKey(tableName));
+    }
 
-      const table = tableFromHashFields(fields, metaRaw ?? undefined);
+    const results = await pipeline.exec() as unknown[];
+
+    tableNames.forEach((tableName, index) => {
+      const fields = results[index * 2];
+      const metaRaw = results[index * 2 + 1];
+      const metaValue = typeof metaRaw === "string"
+        ? metaRaw
+        : metaRaw == null
+          ? undefined
+          : JSON.stringify(metaRaw);
+      const table = tableFromHashFields(fields, metaValue);
       nextPackage.tables[tableName] = normalizeStatePackage({
         tables: { [tableName]: table }
       }).tables[tableName] as never;
-    }));
+    });
 
     return nextPackage;
+  }
+
+  async getVersionToken(statePackage?: StatePackage): Promise<string> {
+    if (statePackage) {
+      return tableNames.map((tableName) => encodeTableMeta(statePackage.tables[tableName])).join("|");
+    }
+
+    const metaValues = await this.redis.mget<(string | null)[]>(...tableNames.map((tableName) => this.metaKey(tableName)));
+    return metaValues.map((value) => value ?? "missing").join("|");
   }
 
   async commitPackage(nextPackage: StatePackage, conditions: RecordVersionRef[], rowChanges: RowChange[]): Promise<void> {
@@ -557,6 +573,10 @@ function metadataProjectId(statePackage: StatePackage): string {
 
 class ModularTaskboardRepository implements TaskboardRepository {
   private readonly documentState = new WeakMap<TaskboardDocument, LoadedDocumentState>();
+  private cachedPackage?: StatePackage;
+  private cachedVersionToken?: string;
+  private cacheCheckedAt = 0;
+  private refreshPromise?: Promise<StatePackage>;
 
   constructor(
     private readonly primary: StateStorageAdapter,
@@ -570,8 +590,66 @@ class ModularTaskboardRepository implements TaskboardRepository {
     }
   ) {}
 
+  private async cachePackage(
+    statePackage: StatePackage,
+    mirrorChanges?: RowChange[]
+  ): Promise<StatePackage> {
+    this.cachedPackage = statePackage;
+    this.cachedVersionToken = await this.primary.getVersionToken(statePackage);
+    this.cacheCheckedAt = Date.now();
+
+    if (this.options.localMirror) {
+      if (mirrorChanges) {
+        await this.options.localMirror.commitPackage(statePackage, [], mirrorChanges);
+      } else {
+        await this.options.localMirror.replacePackage(statePackage);
+      }
+    }
+
+    return statePackage;
+  }
+
+  private async currentPackage(forceVersionCheck = false): Promise<StatePackage> {
+    const cacheIsFresh = Date.now() - this.cacheCheckedAt < 1_000;
+    if (this.cachedPackage && cacheIsFresh && !forceVersionCheck) {
+      return this.cachedPackage;
+    }
+
+    if (this.refreshPromise) {
+      return this.refreshPromise;
+    }
+
+    this.refreshPromise = (async () => {
+      if (this.cachedPackage) {
+        const versionToken = await this.primary.getVersionToken();
+        this.cacheCheckedAt = Date.now();
+
+        if (versionToken === this.cachedVersionToken) {
+          return this.cachedPackage;
+        }
+      }
+
+      return this.cachePackage(await this.primary.loadPackage());
+    })();
+
+    try {
+      return await this.refreshPromise;
+    } finally {
+      this.refreshPromise = undefined;
+    }
+  }
+
+  private async commitPackage(
+    nextPackage: StatePackage,
+    conditions: RecordVersionRef[],
+    rowChanges: RowChange[]
+  ): Promise<void> {
+    await this.primary.commitPackage(nextPackage, conditions, rowChanges);
+    await this.cachePackage(nextPackage, rowChanges);
+  }
+
   async load(loadOptions: LoadTaskboardOptions = {}): Promise<TaskboardDocument> {
-    let statePackage = await this.primary.loadPackage();
+    let statePackage = await this.currentPackage();
 
     if (isStatePackageEmpty(statePackage)) {
       if (this.options.mode === "team") {
@@ -582,10 +660,7 @@ class ModularTaskboardRepository implements TaskboardRepository {
       statePackage = statePackageFromDocument(createEmptyTaskboardDocument());
       await this.ensurePrivateUser(statePackage);
       await this.primary.replacePackage(statePackage);
-    }
-
-    if (this.options.mode === "team") {
-      await this.options.localMirror?.replacePackage(statePackage);
+      await this.cachePackage(statePackage);
     }
 
     const document = statePackageToDocument(statePackage);
@@ -603,7 +678,7 @@ class ModularTaskboardRepository implements TaskboardRepository {
       throw new Error("Cannot save a kanboard document that was not loaded by this repository instance.");
     }
 
-    const latestPackage = await this.primary.loadPackage();
+    const latestPackage = await this.currentPackage(true);
     const diff = diffDocuments(baseline.document, document);
 
     if (diff.changes.length === 0) {
@@ -625,8 +700,7 @@ class ModularTaskboardRepository implements TaskboardRepository {
       { table: "metadata", id: "project" }
     ];
 
-    await this.primary.commitPackage(nextPackage, conditions, rowChanges);
-    await this.options.localMirror?.replacePackage(nextPackage);
+    await this.commitPackage(nextPackage, conditions, rowChanges);
     this.options.onChanged?.();
 
     this.documentState.set(document, {
@@ -638,14 +712,19 @@ class ModularTaskboardRepository implements TaskboardRepository {
   }
 
   async listUsers(): Promise<UserRecord[]> {
-    const statePackage = await this.primary.loadPackage();
+    const statePackage = await this.currentPackage();
     return Object.values(statePackage.tables.users.rows)
       .map((row) => row.value)
       .sort((left, right) => left.name.localeCompare(right.name));
   }
 
+  async getRevision(): Promise<number> {
+    const statePackage = await this.currentPackage();
+    return statePackage.tables.metadata.rows.project?.value.revision ?? 0;
+  }
+
   async getCurrentUser(): Promise<UserRecord | null> {
-    const statePackage = await this.primary.loadPackage();
+    const statePackage = await this.currentPackage();
 
     if (this.options.mode === "team") {
       const actorPrivateKey = await this.getActorPrivateKey();
@@ -661,7 +740,7 @@ class ModularTaskboardRepository implements TaskboardRepository {
   }
 
   async listNotifications(userId: string): Promise<Notification[]> {
-    const pkg = await this.primary.loadPackage();
+    const pkg = await this.currentPackage();
     return Object.values(pkg.tables.notifications.rows)
       .map((row) => row.value)
       .filter((n) => n.recipientId === userId)
@@ -670,7 +749,7 @@ class ModularTaskboardRepository implements TaskboardRepository {
 
   async createNotifications(notifications: Notification[]): Promise<void> {
     if (!notifications.length) return;
-    const pkg = await this.primary.loadPackage();
+    const pkg = await this.currentPackage(true);
     const next = cloneStatePackage(pkg);
     const timestamp = nowIso();
     for (const n of notifications) {
@@ -678,11 +757,11 @@ class ModularTaskboardRepository implements TaskboardRepository {
       next.tables.notifications.version += 1;
     }
     next.tables.notifications.updatedAt = timestamp;
-    await this.primary.commitPackage(next, [], notifications.map((n) => ({ table: "notifications", id: n.id })));
+    await this.commitPackage(next, [], notifications.map((n) => ({ table: "notifications", id: n.id })));
   }
 
   async deleteNotificationsBySource(sourceId: string): Promise<void> {
-    const pkg = await this.primary.loadPackage();
+    const pkg = await this.currentPackage(true);
     const ids = Object.entries(pkg.tables.notifications.rows)
       .filter(([, row]) => row.value.sourceId === sourceId)
       .map(([id]) => id);
@@ -691,11 +770,11 @@ class ModularTaskboardRepository implements TaskboardRepository {
     for (const id of ids) delete next.tables.notifications.rows[id];
     next.tables.notifications.version += 1;
     next.tables.notifications.updatedAt = nowIso();
-    await this.primary.commitPackage(next, [], ids.map((id) => ({ table: "notifications", id, deleted: true })));
+    await this.commitPackage(next, [], ids.map((id) => ({ table: "notifications", id, deleted: true })));
   }
 
   async deleteNodeNotifications(nodeId: string): Promise<void> {
-    const pkg = await this.primary.loadPackage();
+    const pkg = await this.currentPackage(true);
     const ids = Object.entries(pkg.tables.notifications.rows)
       .filter(([, row]) => row.value.nodeId === nodeId)
       .map(([id]) => id);
@@ -704,11 +783,11 @@ class ModularTaskboardRepository implements TaskboardRepository {
     for (const id of ids) delete next.tables.notifications.rows[id];
     next.tables.notifications.version += 1;
     next.tables.notifications.updatedAt = nowIso();
-    await this.primary.commitPackage(next, [], ids.map((id) => ({ table: "notifications", id, deleted: true })));
+    await this.commitPackage(next, [], ids.map((id) => ({ table: "notifications", id, deleted: true })));
   }
 
   async readNodeNotifications(userId: string, nodeId: string, sourceType?: NotificationSourceType): Promise<void> {
-    const pkg = await this.primary.loadPackage();
+    const pkg = await this.currentPackage(true);
     const ids = Object.entries(pkg.tables.notifications.rows)
       .filter(([, row]) => {
         if (row.value.recipientId !== userId || row.value.nodeId !== nodeId) return false;
@@ -721,11 +800,11 @@ class ModularTaskboardRepository implements TaskboardRepository {
     for (const id of ids) delete next.tables.notifications.rows[id];
     next.tables.notifications.version += 1;
     next.tables.notifications.updatedAt = nowIso();
-    await this.primary.commitPackage(next, [], ids.map((id) => ({ table: "notifications", id, deleted: true })));
+    await this.commitPackage(next, [], ids.map((id) => ({ table: "notifications", id, deleted: true })));
   }
 
   async listRecycleBin(): Promise<RecycleBinEntry[]> {
-    const pkg = await this.primary.loadPackage();
+    const pkg = await this.currentPackage();
     return Object.values(pkg.tables.recycleBin.rows)
       .map((row) => row.value)
       .sort((a, b) => b.deletedAt.localeCompare(a.deletedAt));
@@ -733,7 +812,7 @@ class ModularTaskboardRepository implements TaskboardRepository {
 
   async addToRecycleBin(entries: RecycleBinEntry[]): Promise<void> {
     if (!entries.length) return;
-    const pkg = await this.primary.loadPackage();
+    const pkg = await this.currentPackage(true);
     const next = cloneStatePackage(pkg);
     const timestamp = nowIso();
     for (const entry of entries) {
@@ -741,12 +820,12 @@ class ModularTaskboardRepository implements TaskboardRepository {
       next.tables.recycleBin.version += 1;
     }
     next.tables.recycleBin.updatedAt = timestamp;
-    await this.primary.commitPackage(next, [], entries.map((entry) => ({ table: "recycleBin", id: entry.id })));
+    await this.commitPackage(next, [], entries.map((entry) => ({ table: "recycleBin", id: entry.id })));
   }
 
   async removeFromRecycleBin(entryIds: string[]): Promise<void> {
     if (!entryIds.length) return;
-    const pkg = await this.primary.loadPackage();
+    const pkg = await this.currentPackage(true);
     const next = cloneStatePackage(pkg);
     const removed: string[] = [];
     for (const id of entryIds) {
@@ -758,18 +837,18 @@ class ModularTaskboardRepository implements TaskboardRepository {
     if (!removed.length) return;
     next.tables.recycleBin.version += 1;
     next.tables.recycleBin.updatedAt = nowIso();
-    await this.primary.commitPackage(next, [], removed.map((id) => ({ table: "recycleBin", id, deleted: true })));
+    await this.commitPackage(next, [], removed.map((id) => ({ table: "recycleBin", id, deleted: true })));
   }
 
   async emptyRecycleBin(): Promise<void> {
-    const pkg = await this.primary.loadPackage();
+    const pkg = await this.currentPackage(true);
     const ids = Object.keys(pkg.tables.recycleBin.rows);
     if (!ids.length) return;
     const next = cloneStatePackage(pkg);
     next.tables.recycleBin.rows = {};
     next.tables.recycleBin.version += 1;
     next.tables.recycleBin.updatedAt = nowIso();
-    await this.primary.commitPackage(next, [], ids.map((id) => ({ table: "recycleBin", id, deleted: true })));
+    await this.commitPackage(next, [], ids.map((id) => ({ table: "recycleBin", id, deleted: true })));
   }
 
   async getIdentityStatus(): Promise<IdentityStatus> {
@@ -783,7 +862,7 @@ class ModularTaskboardRepository implements TaskboardRepository {
     const actorPrivateKey = await this.getActorPrivateKey();
 
     if (actorPrivateKey) {
-      const statePackage = await this.primary.loadPackage();
+      const statePackage = await this.currentPackage();
       const actor = deriveAddress(actorPrivateKey);
 
       return {
@@ -802,7 +881,7 @@ class ModularTaskboardRepository implements TaskboardRepository {
     }
 
     const identityFile = await readIdentityFile(this.options.identityFile);
-    const statePackage = await this.primary.loadPackage();
+    const statePackage = await this.currentPackage();
 
     return {
       required: true,
@@ -823,7 +902,7 @@ class ModularTaskboardRepository implements TaskboardRepository {
       );
     }
 
-    const statePackage = await this.primary.loadPackage();
+    const statePackage = await this.currentPackage(true);
     const actor = deriveAddress(actorPrivateKey);
 
     if (!statePackage.tables.users.rows[actor]) {
@@ -833,8 +912,6 @@ class ModularTaskboardRepository implements TaskboardRepository {
         "Send this address to the team admin and ask them to add it to the users table, then retry."
       );
     }
-
-    await this.options.localMirror?.replacePackage(statePackage);
 
     return {
       required: true,
@@ -988,162 +1065,6 @@ function startPrivateBackupScheduler(localAdapter: StateStorageAdapter, dbString
   return () => {
     dirty = true;
   };
-}
-
-export class UpstashRedisTaskboardRepository implements TaskboardRepository {
-  private readonly redis: Redis;
-  private readonly compareAndSetScript = `
-local current = redis.call("GET", KEYS[1])
-local expectedRevision = tonumber(ARGV[1])
-local nextValue = ARGV[2]
-
-if not current then
-  if expectedRevision ~= 0 then
-    return cjson.encode({ ok = false, currentRevision = 0 })
-  end
-
-  redis.call("SET", KEYS[1], nextValue)
-  return cjson.encode({ ok = true, currentRevision = 0 })
-end
-
-local currentDocument = cjson.decode(current)
-local currentRevision = tonumber(currentDocument.revision) or 0
-
-if currentRevision ~= expectedRevision then
-  return cjson.encode({ ok = false, currentRevision = currentRevision })
-end
-
-redis.call("SET", KEYS[1], nextValue)
-return cjson.encode({ ok = true, currentRevision = currentRevision })
-`;
-
-  constructor(
-    private readonly redisUrl: string,
-    private readonly redisToken: string,
-    private readonly redisKey: string
-  ) {
-    this.redis = new Redis({
-      url: redisUrl,
-      token: redisToken,
-      automaticDeserialization: false
-    });
-  }
-
-  async load(options: LoadTaskboardOptions = {}): Promise<TaskboardDocument> {
-    const value = await this.redis.get<string | null>(this.redisKey);
-
-    if (value === null || value === undefined) {
-      const initial = createEmptyTaskboardDocument();
-      await options.onCreate?.(initial);
-      await this.save(initial, 0, { operation: "create the initial Upstash kanboard" });
-      return initial;
-    }
-
-    if (typeof value !== "string") {
-      return normalizeTaskboardDocument(value);
-    }
-
-    return parseStoredDocumentJson(
-      value,
-      `Upstash Redis key "${this.redisKey}"`,
-      "Back it up, fix the stored value, delete the key, or set TASKBOARD_REDIS_KEY to a fresh key."
-    );
-  }
-
-  async save(document: TaskboardDocument, expectedRevision: number, options: SaveTaskboardOptions = {}): Promise<TaskboardDocument> {
-    const result = await this.redis.eval<string[], unknown>(this.compareAndSetScript, [this.redisKey], [String(expectedRevision), JSON.stringify(document)]);
-    const payload = parseCompareAndSetResult(result);
-
-    if (!payload.ok) {
-      throw new RepositoryConflictError(payload.currentRevision, expectedRevision, options.operation);
-    }
-
-    return document;
-  }
-}
-
-export class LocalFileTaskboardRepository implements TaskboardRepository {
-  constructor(private readonly filePath: string) {}
-
-  private async withFileLock<T>(callback: () => Promise<T>): Promise<T> {
-    const directory = path.dirname(this.filePath);
-    const lockPath = `${this.filePath}.lock`;
-
-    await mkdir(directory, { recursive: true });
-
-    for (let attempt = 0; attempt < LOCAL_LOCK_RETRIES; attempt += 1) {
-      try {
-        const handle = await open(lockPath, "wx");
-
-        try {
-          return await callback();
-        } finally {
-          await handle.close();
-          await rm(lockPath, { force: true });
-        }
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST" || attempt === LOCAL_LOCK_RETRIES - 1) {
-          throw error;
-        }
-
-        await delay(LOCAL_LOCK_DELAY_MS);
-      }
-    }
-
-    throw new Error("Failed to acquire local taskboard lock.");
-  }
-
-  private async readCurrentDocument(): Promise<TaskboardDocument> {
-    try {
-      const value = await readFile(this.filePath, "utf8");
-      return normalizeTaskboardDocument(JSON.parse(value));
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        throw error;
-      }
-
-      return createEmptyTaskboardDocument();
-    }
-  }
-
-  async load(options: LoadTaskboardOptions = {}): Promise<TaskboardDocument> {
-    try {
-      const value = await readFile(this.filePath, "utf8");
-      return parseStoredDocumentJson(
-        value,
-        `Local kanboard file ${this.filePath}`,
-        "Back it up, fix the file, remove it, or set TASKBOARD_LOCAL_FILE to a fresh path."
-      );
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        throw error;
-      }
-
-      const initial = createEmptyTaskboardDocument();
-      await options.onCreate?.(initial);
-      await this.save(initial, 0, { operation: "create the initial local kanboard" });
-      return initial;
-    }
-  }
-
-  async save(document: TaskboardDocument, expectedRevision: number, options: SaveTaskboardOptions = {}): Promise<TaskboardDocument> {
-    const directory = path.dirname(this.filePath);
-    const tempPath = `${this.filePath}.tmp`;
-
-    await this.withFileLock(async () => {
-      const current = await this.readCurrentDocument();
-
-      if (current.revision !== expectedRevision) {
-        throw new RepositoryConflictError(current.revision, expectedRevision, options.operation);
-      }
-
-      await mkdir(directory, { recursive: true });
-      await writeFile(tempPath, JSON.stringify(document, null, 2), "utf8");
-      await rename(tempPath, this.filePath);
-    });
-
-    return document;
-  }
 }
 
 export function createTaskboardRepository(config: AppConfig): TaskboardRepository {

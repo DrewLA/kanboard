@@ -1,5 +1,6 @@
 import React from "https://esm.sh/react@18.3.1";
 import htm from "https://esm.sh/htm@3.1.1";
+import { formatRelativeTime } from "./utils.js";
 
 const html = htm.bind(React.createElement);
 
@@ -7,25 +8,6 @@ function mcpUrl(health) {
   if (!health) return null;
   const host = health.host === "127.0.0.1" ? "localhost" : health.host;
   return `http://${host}:${health.port}/mcp`;
-}
-
-function formatRelativeTime(value) {
-  if (!value) return "";
-  const timestamp = new Date(value).getTime();
-  if (!Number.isFinite(timestamp)) return "";
-
-  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
-  if (seconds < 10) return "now";
-  if (seconds < 60) return `${seconds}s ago`;
-
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
 }
 
 function agentName(session) {

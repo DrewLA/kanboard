@@ -41,7 +41,12 @@ async function readLockRecord(lockPath: string): Promise<LockRecord | undefined>
         startedAt: typeof parsed.startedAt === "string" ? parsed.startedAt : ""
       };
     }
-  } catch {}
+  } catch (error) {
+    if (errorCode(error) === "ENOENT" || error instanceof SyntaxError) {
+      return undefined;
+    }
+    throw error;
+  }
 
   return undefined;
 }

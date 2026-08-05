@@ -2,7 +2,7 @@
   "name": "kanboard",
   "version": "0.1.0",
   "private": true,
-  "description": "Local-only agile taskboard with Redis persistence, CRUD functions, a simple UI, and an MCP server.",
+  "description": "Local-first taskboard foundation for remotely supervised software delivery.",
   "engines": {
     "node": ">=20.0.0",
     "npm": ">=10.0.0"
@@ -19,8 +19,6 @@
     "identity:whoami": "tsx src/scripts/whoami.ts",
     "upgrade": "tsx src/scripts/upgrade.ts",
     "typecheck": "tsc --noEmit",
-    "migrate:up": "tsx src/scripts/migrate.ts up",
-    "migrate:down": "tsx src/scripts/migrate.ts down",
     "migrate:hash": "tsx src/scripts/migrate-hash.ts",
     "backup": "tsx src/scripts/backup.ts"
   },

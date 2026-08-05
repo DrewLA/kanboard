@@ -24,12 +24,12 @@
  */
 import { Redis } from "@upstash/redis";
 
-import { getAppConfig } from "../config";
+import { loadAppConfig } from "../config";
 import { parseDbString } from "../repository";
 import { encodeRowsToHashFields, encodeTableMeta, normalizeTable, tableNames } from "../state-package";
 
 async function run(): Promise<void> {
-  const config = getAppConfig();
+  const config = loadAppConfig();
 
   if (!config.dbString) {
     console.error("No TASKBOARD_DB_STRING configured. This migration only applies to Upstash (team) boards.");

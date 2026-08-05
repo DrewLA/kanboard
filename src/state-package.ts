@@ -362,15 +362,30 @@ export function documentToTableValues(document: TaskboardDocument): {
 
 function attachComments<T extends { id: string; comments: NodeComment[] }>(
   entities: Record<string, T>,
-  comments: CommentRecord[],
+  commentsByNode: Map<string, NodeComment[]>,
   nodeType: BoardNodeType
 ): void {
   for (const entity of Object.values(entities)) {
-    entity.comments = comments
-      .filter((comment) => comment.nodeType === nodeType && comment.nodeId === entity.id)
-      .map(({ nodeType: _nodeType, nodeId: _nodeId, userId: _userId, ...comment }) => comment)
-      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+    entity.comments = commentsByNode.get(`${nodeType}:${entity.id}`) ?? [];
   }
+}
+
+function indexComments(rows: StatePackage["tables"]["comments"]["rows"]): Map<string, NodeComment[]> {
+  const commentsByNode = new Map<string, NodeComment[]>();
+
+  for (const row of Object.values(rows)) {
+    const { nodeType, nodeId, userId: _userId, ...comment } = clone(row.value);
+    const key = `${nodeType}:${nodeId}`;
+    const comments = commentsByNode.get(key) ?? [];
+    comments.push(comment);
+    commentsByNode.set(key, comments);
+  }
+
+  for (const comments of commentsByNode.values()) {
+    comments.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  }
+
+  return commentsByNode;
 }
 
 export function statePackageToDocument(statePackage: StatePackage): TaskboardDocument {
@@ -396,11 +411,11 @@ export function statePackageToDocument(statePackage: StatePackage): TaskboardDoc
     recentMutations: []
   };
 
-  const comments = Object.values(statePackage.tables.comments.rows).map((row) => clone(row.value));
-  attachComments(document.epics, comments, "epic");
-  attachComments(document.features, comments, "feature");
-  attachComments(document.userStories, comments, "story");
-  attachComments(document.tasks, comments, "task");
+  const commentsByNode = indexComments(statePackage.tables.comments.rows);
+  attachComments(document.epics, commentsByNode, "epic");
+  attachComments(document.features, commentsByNode, "feature");
+  attachComments(document.userStories, commentsByNode, "story");
+  attachComments(document.tasks, commentsByNode, "task");
 
   return document;
 }

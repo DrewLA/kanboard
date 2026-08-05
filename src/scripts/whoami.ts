@@ -1,10 +1,10 @@
 import { readFile } from "node:fs/promises";
 
-import { getAppConfig } from "../config";
+import { loadAppConfig } from "../config";
 import { fileExists } from "../identity-store";
 
 async function main(): Promise<void> {
-  const config = getAppConfig();
+  const config = loadAppConfig();
 
   if (!(await fileExists(config.userFile))) {
     console.error(`No user file found at ${config.userFile}`);

@@ -3,6 +3,15 @@ import htm from "https://esm.sh/htm@3.1.1";
 import { allowedStatuses, statusLabels, getTaskContexts, priorityClass, formatDate, formatRelativeTime } from "./utils.js";
 import { CustomSelect } from "./CustomSelect.js";
 import { request, getErrorMessage } from "./api.js";
+import {
+  attachmentKindLabel,
+  buildAttachmentContentUrl,
+  formatBytes,
+  isVisualAttachment,
+  uploadFileToPresignedUrl,
+  validateUploadSelection,
+  workItemCollection as sourceApiPath,
+} from "./attachments.js";
 
 const html = htm.bind(React.createElement);
 
@@ -81,39 +90,10 @@ function buildFeatureHaystack(epic, feature) {
     .toLowerCase();
 }
 
-function attachmentKindLabel(kind) {
-  if (kind === "image") return "Image";
-  if (kind === "mockup") return "Mockup";
-  return "File";
-}
-
-function formatBytes(value) {
-  if (!Number.isFinite(value)) return "";
-  if (value < 1024) return `${value} B`;
-  if (value < 1024 ** 2) return `${(value / 1024).toFixed(value < 10 * 1024 ? 1 : 0)} KB`;
-  if (value < 1024 ** 3) return `${(value / (1024 ** 2)).toFixed(value < 10 * 1024 ** 2 ? 1 : 0)} MB`;
-  return `${(value / (1024 ** 3)).toFixed(1)} GB`;
-}
-
-function sourceApiPath(sourceType) {
-  if (sourceType === "epic") return "epics";
-  if (sourceType === "feature") return "features";
-  return "tasks";
-}
-
 function sourceTypeLabel(sourceType) {
   if (sourceType === "epic") return "Epic";
   if (sourceType === "feature") return "Feature";
   return "Task";
-}
-
-function buildBoardAttachmentContentUrl(sourceType, sourceId, attachmentId, download = false) {
-  const query = download ? "?download=1" : "";
-  return `/api/${sourceApiPath(sourceType)}/${encodeURIComponent(sourceId)}/attachments/${encodeURIComponent(attachmentId)}/content${query}`;
-}
-
-function isVisualAttachment(attachment) {
-  return attachment?.kind === "image" || attachment?.kind === "mockup";
 }
 
 function canRenderAsImage(attachment) {
@@ -124,70 +104,6 @@ function uploadedByLabel(attachment, usersMap) {
   const uploadedBy = attachment?.uploadedBy;
   if (!uploadedBy) return "";
   return usersMap?.[uploadedBy]?.name || uploadedBy;
-}
-
-function fileExtension(fileName) {
-  const match = String(fileName || "").toLowerCase().match(/\.[a-z0-9]+$/i);
-  return match ? match[0] : "";
-}
-
-const mockupMimeTypes = new Set(["text/html", "image/svg+xml", "image/png"]);
-const imageMimeTypes = new Set(["image/jpeg", "image/png", "image/gif", "image/webp", "image/avif"]);
-
-function validateUploadSelection(kind, file) {
-  if (!file) return "Select a file first.";
-
-  const extension = fileExtension(file.name);
-  const mimeType = (file.type || "").toLowerCase();
-
-  if (kind === "mockup") {
-    if (![".html", ".svg", ".png"].includes(extension) || !mockupMimeTypes.has(mimeType)) {
-      return "Mockups must be an HTML, SVG, or PNG file.";
-    }
-  }
-
-  if (kind === "image") {
-    if (![".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif"].includes(extension) || !imageMimeTypes.has(mimeType)) {
-      return "Images must be JPG, PNG, GIF, WebP, or AVIF.";
-    }
-  }
-
-  return "";
-}
-
-async function uploadFileToPresignedUrl(uploadUrl, file, contentType, onProgress) {
-  try {
-    await new Promise((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      xhr.open("PUT", uploadUrl);
-      xhr.setRequestHeader("Content-Type", contentType);
-
-      xhr.upload.addEventListener("progress", (event) => {
-        if (typeof onProgress === "function") {
-          onProgress(event.loaded, event.lengthComputable ? event.total : file.size || 0);
-        }
-      });
-
-      xhr.addEventListener("load", () => {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          resolve();
-          return;
-        }
-
-        reject(new Error(`Upload to R2 failed with status ${xhr.status}. Check the bucket CORS rule for ${window.location.origin}.`));
-      });
-
-      xhr.addEventListener("error", () => reject(new TypeError("Network request failed")));
-      xhr.addEventListener("abort", () => reject(new Error("Upload to R2 was aborted.")));
-      xhr.send(file);
-    });
-  } catch (error) {
-    if (error instanceof TypeError) {
-      throw new Error(`Upload to R2 failed. Configure the R2 bucket CORS rule to allow ${window.location.origin} with PUT, GET, and HEAD using the Content-Type header.`);
-    }
-
-    throw error;
-  }
 }
 
 function BoardAttachmentGlyph({ kind, size = 16 }) {
@@ -223,7 +139,7 @@ function BoardAttachmentViewer({ record, onClose }) {
   const [previewLoaded, setPreviewLoaded] = useState(false);
 
   const contentUrl = record
-    ? buildBoardAttachmentContentUrl(record.sourceType, record.sourceId, attachment.id)
+    ? buildAttachmentContentUrl(record.sourceType, record.sourceId, attachment.id)
     : "";
   const renderAsImage = attachment ? canRenderAsImage(attachment) : false;
 
@@ -256,7 +172,7 @@ function BoardAttachmentViewer({ record, onClose }) {
             <button
               className="button button-solid"
               type="button"
-              onClick=${() => window.open(buildBoardAttachmentContentUrl(record.sourceType, record.sourceId, attachment.id, attachment.kind === "file"), "_blank", "noopener,noreferrer")}
+              onClick=${() => window.open(buildAttachmentContentUrl(record.sourceType, record.sourceId, attachment.id, attachment.kind === "file"), "_blank", "noopener,noreferrer")}
             >Open in tab</button>
             <button className="button button-ghost" type="button" onClick=${onClose} aria-label="Close viewer">✕</button>
           </div>
@@ -441,7 +357,7 @@ function BoardAttachmentPanel({
                       <button
                         className="button button-ghost btn-sm"
                         type="button"
-                        onClick=${() => window.open(buildBoardAttachmentContentUrl(record.sourceType, record.sourceId, attachment.id, attachment.kind === "file"), "_blank", "noopener,noreferrer")}
+                        onClick=${() => window.open(buildAttachmentContentUrl(record.sourceType, record.sourceId, attachment.id, attachment.kind === "file"), "_blank", "noopener,noreferrer")}
                       >${attachment.kind === "file" ? "Download" : "Open"}</button>
                       <button
                         className=${`button button-ghost btn-sm board-attachment-delete${confirming ? " board-attachment-delete--confirming" : ""}${removing ? " button--loading" : ""}`}

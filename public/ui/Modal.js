@@ -4,6 +4,14 @@ import { allowedStatuses, allowedPriorities, statusLabels, formatDate, makeOptio
 import { CustomSelect } from "./CustomSelect.js";
 import { MetaChip } from "./BoardView.js";
 import { request, getErrorMessage } from "./api.js";
+import {
+  attachmentKindLabel,
+  buildTaskAttachmentContentUrl as buildAttachmentContentUrl,
+  formatBytes,
+  isVisualAttachment,
+  uploadFileToPresignedUrl,
+  validateUploadSelection,
+} from "./attachments.js";
 
 const html = htm.bind(React.createElement);
 
@@ -603,54 +611,6 @@ function openLinkAtCaret(e) {
   }
 }
 
-function formatBytes(value) {
-  if (!Number.isFinite(value) || value < 0) return null;
-  if (value < 1024) return `${value} B`;
-  if (value < 1024 ** 2) return `${(value / 1024).toFixed(value < 10 * 1024 ? 1 : 0)} KB`;
-  if (value < 1024 ** 3) return `${(value / (1024 ** 2)).toFixed(value < 10 * 1024 ** 2 ? 1 : 0)} MB`;
-  return `${(value / (1024 ** 3)).toFixed(1)} GB`;
-}
-
-const mockupMimeTypes = new Set(["text/html", "image/svg+xml", "image/png"]);
-const imageMimeTypes = new Set(["image/jpeg", "image/png", "image/gif", "image/webp", "image/avif"]);
-
-function buildAttachmentContentUrl(taskId, attachmentId, download = false) {
-  const query = download ? "?download=1" : "";
-  return `/api/tasks/${encodeURIComponent(taskId)}/attachments/${encodeURIComponent(attachmentId)}/content${query}`;
-}
-
-function fileExtension(fileName) {
-  const match = String(fileName || "").toLowerCase().match(/\.[a-z0-9]+$/i);
-  return match ? match[0] : "";
-}
-
-function validateUploadSelection(kind, file) {
-  if (!file) return "Select a file first.";
-
-  const extension = fileExtension(file.name);
-  const mimeType = (file.type || "").toLowerCase();
-
-  if (kind === "mockup") {
-    if (![".html", ".svg", ".png"].includes(extension) || !mockupMimeTypes.has(mimeType)) {
-      return "Mockups must be an HTML, SVG, or PNG file.";
-    }
-  }
-
-  if (kind === "image") {
-    if (![".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif"].includes(extension) || !imageMimeTypes.has(mimeType)) {
-      return "Images must be JPG, PNG, GIF, WebP, or AVIF.";
-    }
-  }
-
-  return "";
-}
-
-function attachmentKindLabel(kind) {
-  if (kind === "image") return "Image";
-  if (kind === "mockup") return "Mockup";
-  return "File";
-}
-
 function AttachmentGlyph({ kind, size = 16 }) {
   if (kind === "mockup") {
     return html`
@@ -677,45 +637,6 @@ function AttachmentGlyph({ kind, size = 16 }) {
       <path d="M9.5 2.5V5.5H12.5" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"></path>
     </svg>
   `;
-}
-
-function isVisualAttachment(attachment) {
-  return attachment?.kind === "image" || attachment?.kind === "mockup";
-}
-
-async function uploadFileToPresignedUrl(uploadUrl, file, contentType, onProgress) {
-  try {
-    await new Promise((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      xhr.open("PUT", uploadUrl);
-      xhr.setRequestHeader("Content-Type", contentType);
-
-      xhr.upload.addEventListener("progress", (event) => {
-        if (typeof onProgress === "function") {
-          onProgress(event.loaded, event.lengthComputable ? event.total : file.size || 0);
-        }
-      });
-
-      xhr.addEventListener("load", () => {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          resolve();
-          return;
-        }
-
-        reject(new Error(`Upload to R2 failed with status ${xhr.status}. Check the bucket CORS rule for ${window.location.origin}.`));
-      });
-
-      xhr.addEventListener("error", () => reject(new TypeError("Network request failed")));
-      xhr.addEventListener("abort", () => reject(new Error("Upload to R2 was aborted.")));
-      xhr.send(file);
-    });
-  } catch (error) {
-    if (error instanceof TypeError) {
-      throw new Error(`Upload to R2 failed. Configure the R2 bucket CORS rule to allow ${window.location.origin} with PUT, GET, and HEAD using the Content-Type header.`);
-    }
-
-    throw error;
-  }
 }
 
 function TaskAttachmentViewer({ taskId, attachment, taskTitle, onBack, onClose }) {

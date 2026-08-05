@@ -46,6 +46,7 @@ import {
   toSnapshot
 } from "./model";
 import { AppConfig } from "./config";
+import { NotFoundError } from "./application-errors";
 import { buildWorkItemAttachmentKey, normalizeAttachmentToken, putAttachmentObject } from "./r2";
 import { TaskboardRepository } from "./repository";
 import { UserRecord } from "./state-package";
@@ -55,6 +56,11 @@ let writeQueue: Promise<void> = Promise.resolve();
 let activeMutationEditor: string | undefined;
 let activeMutationSource: "mcp" | "api" | undefined;
 
+function reportPostMutationFailure(operation: string, error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`[taskboard-service] ${operation} failed after the board mutation completed: ${message}`);
+}
+
 export async function withMcpMutationSource<T>(fn: () => Promise<T>): Promise<T> {
   const previous = activeMutationSource;
   activeMutationSource = "mcp";
@@ -62,15 +68,6 @@ export async function withMcpMutationSource<T>(fn: () => Promise<T>): Promise<T>
     return await fn();
   } finally {
     activeMutationSource = previous;
-  }
-}
-
-export class NotFoundError extends Error {
-  readonly statusCode = 404;
-
-  constructor(message: string) {
-    super(message);
-    this.name = "NotFoundError";
   }
 }
 
@@ -976,10 +973,6 @@ export async function getBoardBrief(repository: TaskboardRepository): Promise<Bo
   return document.boardBrief;
 }
 
-export async function getMetadata(repository: TaskboardRepository): Promise<BoardBrief> {
-  return getBoardBrief(repository);
-}
-
 export async function getNodeComment(repository: TaskboardRepository, commentId: string): Promise<NodeComment> {
   const document = await repository.load();
   return requireNodeComment(document, commentId).comment;
@@ -1014,7 +1007,8 @@ export async function createNodeComment(repository: TaskboardRepository, input: 
 
   if (resolvedNodeId) {
     const actor = await repository.getCurrentUser?.();
-    void notifyMentions(repository, input.nodeType, resolvedNodeId, `comment:${comment.id}`, "comment", comment.body, actor?.id).catch(() => {});
+    void notifyMentions(repository, input.nodeType, resolvedNodeId, `comment:${comment.id}`, "comment", comment.body, actor?.id)
+      .catch((error) => reportPostMutationFailure("create mention notifications", error));
   }
   return comment;
 }
@@ -1053,7 +1047,8 @@ export async function updateNodeComment(
 
   if (resolvedNodeType && resolvedNodeId) {
     const actor = await repository.getCurrentUser?.();
-    void notifyMentions(repository, resolvedNodeType, resolvedNodeId, `comment:${commentId}`, "comment", comment.body, actor?.id).catch(() => {});
+    void notifyMentions(repository, resolvedNodeType, resolvedNodeId, `comment:${commentId}`, "comment", comment.body, actor?.id)
+      .catch((error) => reportPostMutationFailure("update mention notifications", error));
   }
   return comment;
 }
@@ -1097,7 +1092,8 @@ export async function deleteNodeComment(
       { type: snapshot.nodeType, id: snapshot.nodeId },
       actor?.id
     );
-    await pushToRecycleBin(repository, entry).catch(() => {});
+    await pushToRecycleBin(repository, entry)
+      .catch((error) => reportPostMutationFailure("archive deleted comment", error));
   }
 
   return result;
@@ -1127,13 +1123,6 @@ export async function updateBoardBrief(
       }
     };
   });
-}
-
-export async function updateMetadata(
-  repository: TaskboardRepository,
-  patch: BoardBriefPatch
-): Promise<BoardBrief> {
-  return updateBoardBrief(repository, patch);
 }
 
 export async function listEpics(repository: TaskboardRepository): Promise<Epic[]> {
@@ -1240,7 +1229,8 @@ export async function deleteEpic(
       undefined,
       actor?.id
     );
-    await pushToRecycleBin(repository, entry).catch(() => {});
+    await pushToRecycleBin(repository, entry)
+      .catch((error) => reportPostMutationFailure("archive deleted epic", error));
   }
 
   return result;
@@ -1356,7 +1346,8 @@ export async function deleteFeature(
       { type: "epic", id: snapshot.epicId },
       actor?.id
     );
-    await pushToRecycleBin(repository, entry).catch(() => {});
+    await pushToRecycleBin(repository, entry)
+      .catch((error) => reportPostMutationFailure("archive deleted feature", error));
   }
 
   return result;
@@ -1472,7 +1463,8 @@ export async function deleteUserStory(
       { type: "feature", id: snapshot.featureId },
       actor?.id
     );
-    await pushToRecycleBin(repository, entry).catch(() => {});
+    await pushToRecycleBin(repository, entry)
+      .catch((error) => reportPostMutationFailure("archive deleted story", error));
   }
 
   return result;
@@ -1544,7 +1536,8 @@ export async function createTask(
   const textFields = [task.title, task.summary, task.implementationNotes].filter(Boolean).join(" ");
   if (textFields) {
     const actor = await repository.getCurrentUser?.();
-    void notifyMentions(repository, "task", task.id, `field:${task.id}`, "field", textFields, actor?.id).catch(() => {});
+    void notifyMentions(repository, "task", task.id, `field:${task.id}`, "field", textFields, actor?.id)
+      .catch((error) => reportPostMutationFailure("create task mention notifications", error));
   }
   return task;
 }
@@ -1584,7 +1577,8 @@ export async function updateTask(
   if (patch.title !== undefined || patch.summary !== undefined || patch.implementationNotes !== undefined) {
     const textFields = [task.title, task.summary, task.implementationNotes].filter(Boolean).join(" ");
     const actor = await repository.getCurrentUser?.();
-    void notifyMentions(repository, "task", taskId, `field:${taskId}`, "field", textFields, actor?.id).catch(() => {});
+    void notifyMentions(repository, "task", taskId, `field:${taskId}`, "field", textFields, actor?.id)
+      .catch((error) => reportPostMutationFailure("update task mention notifications", error));
   }
   return task;
 }
@@ -1804,7 +1798,8 @@ export async function deleteTask(
       { type: "story", id: snapshot.storyId },
       actor?.id
     );
-    await pushToRecycleBin(repository, entry).catch(() => {});
+    await pushToRecycleBin(repository, entry)
+      .catch((error) => reportPostMutationFailure("archive deleted task", error));
   }
 
   return result;

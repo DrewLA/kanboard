@@ -45,7 +45,7 @@ export function isTeamBoardEmptyError(error: unknown): error is TeamBoardEmptyEr
 function redactSecrets(message: string, config?: AppConfig): string {
   if (!config) return message;
   let redacted = message;
-  for (const secret of [config.dbString, config.redisToken, config.redisUrl]) {
+  for (const secret of [config.dbString]) {
     if (secret) redacted = redacted.split(secret).join("[redacted]");
   }
   return redacted;

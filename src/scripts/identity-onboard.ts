@@ -5,7 +5,7 @@ import path from "node:path";
 import { Redis } from "@upstash/redis";
 import { getAddress } from "ethers";
 
-import { getAppConfig } from "../config";
+import { loadAppConfig } from "../config";
 import { deriveAddress, signMutationEnvelope } from "../identity";
 import { createEmptyTaskboardDocument, nowIso } from "../model";
 import { StateTable, UserRecord, VersionedRecord, encodeRowsToHashFields, encodeTableMeta, statePackageFromDocument, tableFromHashFields, tableNames } from "../state-package";
@@ -198,7 +198,7 @@ async function registerUserInTeamDb(options: {
 
 async function main(): Promise<void> {
   const force = process.argv.includes("--force");
-  const config = getAppConfig();
+  const config = loadAppConfig();
   const identityPath = config.identityFile;
   let registerExistingIdentity = false;
 

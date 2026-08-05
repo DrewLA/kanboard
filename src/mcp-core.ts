@@ -29,13 +29,13 @@ import {
   uploadAttachmentInputSchema
 } from "./model";
 import { AppConfig } from "./config";
+import { NotFoundError } from "./application-errors";
 import {
   RepositoryAccessError,
   RepositoryConflictError,
   TaskboardRepository
 } from "./repository";
 import {
-  NotFoundError,
   createNodeComment,
   createEpic,
   createFeature,
@@ -96,11 +96,6 @@ export const toolDefinitions = [
     inputSchema: { type: "object", properties: {}, additionalProperties: false }
   },
   {
-    name: "get_metadata",
-    description: "Compatibility alias for get_board_brief.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false }
-  },
-  {
     name: "list_epics",
     description: "List all epics without loading the full taskboard snapshot.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false }
@@ -146,23 +141,6 @@ export const toolDefinitions = [
   {
     name: "update_board_brief",
     description: "Update the top-level BoardBrief.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        productName: { type: "string" },
-        objective: { type: "string" },
-        scopeDefinition: { type: "string" },
-        nonGoals: { type: "string" },
-        successCriteria: { type: "string" },
-        implementationNotes: { type: "string" },
-        currentFocus: { type: "string" }
-      },
-      additionalProperties: false
-    }
-  },
-  {
-    name: "update_metadata",
-    description: "Compatibility alias for update_board_brief.",
     inputSchema: {
       type: "object",
       properties: {
@@ -820,7 +798,6 @@ export function buildMcpServer(repository: TaskboardRepository, config: AppConfi
         case "get_taskboard":
           return toText(await getTaskboard(repository));
         case "get_board_brief":
-        case "get_metadata":
           return toText(await getBoardBrief(repository));
         case "list_epics":
           return toText(await listEpics(repository));
@@ -831,7 +808,6 @@ export function buildMcpServer(repository: TaskboardRepository, config: AppConfi
         case "find_nodes":
           return toText(await findNodes(repository, findNodesInputSchema.parse(args)));
         case "update_board_brief":
-        case "update_metadata":
           return toText(await updateBoardBrief(repository, boardBriefPatchSchema.parse(args)));
         case "create_comment":
           return toText(await createNodeComment(repository, createNodeCommentInputSchema.parse(args)));

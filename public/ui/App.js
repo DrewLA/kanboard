@@ -236,16 +236,12 @@ export function App() {
         return;
       }
 
-      const [nextTaskboard, nextUser, nextUsers, nextNotifications] = await Promise.all([
-        request("/api/taskboard"),
-        request("/api/users/me").catch(() => null),
-        request("/api/users").catch(() => []),
-        request("/api/notifications").catch(() => [])
-      ]);
+      const bootstrap = await request("/api/bootstrap");
+      const nextTaskboard = bootstrap.taskboard;
       setTaskboard(nextTaskboard);
-      setCurrentUser(nextUser);
-      setUsers(nextUsers || []);
-      setNotifications(nextNotifications || []);
+      setCurrentUser(bootstrap.currentUser || null);
+      setUsers(bootstrap.users || []);
+      setNotifications(bootstrap.notifications || []);
       setExpanded((prev) => {
         if (prev.size) return prev;
         const seed = new Set();
@@ -300,7 +296,9 @@ export function App() {
 
   useEffect(() => {
     const onVisible = () => {
-      if (document.visibilityState === "visible") reload().catch(() => {});
+      if (document.visibilityState === "visible") {
+        reload().catch((error) => setFlashError(getErrorMessage(error)));
+      }
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
@@ -563,13 +561,14 @@ export function App() {
         if (sourceType && n.sourceType !== sourceType) return true;
         return false;
       }));
-    } catch {}
+    } catch (error) {
+      setFlashError(getErrorMessage(error));
+    }
   }
 
   function navigateTo(view) {
     setActiveView(view);
     window.location.hash = `/${view}`;
-    reload().catch(() => {});
   }
 
 
@@ -782,7 +781,7 @@ export function App() {
         open=${recycleOpen}
         onClose=${() => setRecycleOpen(false)}
         usersMap=${usersMap}
-        onChanged=${() => reload().catch(() => {})}
+        onChanged=${() => reload().catch((error) => setFlashError(getErrorMessage(error)))}
         onConfirm=${showConfirm}
       />
     </main>

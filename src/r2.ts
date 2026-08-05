@@ -3,7 +3,7 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 import { AppConfig, assertR2Config } from "./config";
 import { TaskAttachmentKind, WorkItemType } from "./model";
- 
+
 let activeClient: S3Client | undefined;
 let loadedConfigSignature: string | undefined;
 
@@ -70,16 +70,6 @@ export function normalizeAttachmentToken(value: string): string {
   return sanitizeKeySegment(value, "attachment");
 }
 
-export function buildTaskAttachmentKey(
-  taskId: string,
-  attachmentId: string,
-  kind: TaskAttachmentKind,
-  fileName: string,
-  relativePath?: string
-): string {
-  return buildWorkItemAttachmentKey("task", taskId, attachmentId, kind, fileName, relativePath);
-}
-
 export function buildWorkItemAttachmentKey(
   itemType: WorkItemType | "epic",
   itemId: string,
@@ -105,7 +95,7 @@ export function buildWorkItemAttachmentKey(
   return `${prefix}/${itemPath}/${normalizedAttachmentId}-${normalizedFileName}`;
 }
 
-export async function createTaskUploadUrl(config: AppConfig, key: string, contentType: string, expiresIn = 3600) {
+export async function createAttachmentUploadUrl(config: AppConfig, key: string, contentType: string, expiresIn = 3600) {
   const { client, config: requiredConfig } = getR2Client(config);
   const uploadUrl = await getSignedUrl(client, new PutObjectCommand({
     Bucket: requiredConfig.r2Bucket,
@@ -130,7 +120,7 @@ export async function putAttachmentObject(config: AppConfig, key: string, body: 
   return { key };
 }
 
-export async function getTaskAttachmentObject(config: AppConfig, key: string) {
+export async function getAttachmentObject(config: AppConfig, key: string) {
   const { client, config: requiredConfig } = getR2Client(config);
   return client.send(new GetObjectCommand({
     Bucket: requiredConfig.r2Bucket,
